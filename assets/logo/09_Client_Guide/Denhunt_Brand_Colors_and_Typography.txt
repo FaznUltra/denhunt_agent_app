@@ -1,0 +1,14 @@
+DENHUNT BRAND COLOR PALETTE
+
+Deep Navy:  #0E1B2E
+Muted Green: #4A5F52
+Soft Gray:   #A7A9AC
+Warm Tan:    #D4B48C
+Off White:   #F5F6F7
+
+Typography:
+Heading Font: Playfair Display Semibold
+Supporting Font: Inter Regular
+
+Tagline:
+FIND YOUR NEXT HOME
