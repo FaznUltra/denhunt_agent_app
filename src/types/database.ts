@@ -91,7 +91,7 @@ export type AreaReportStatus = 'draft' | 'under_review' | 'published' | 'outdate
 export type SearchRequestStatus = 'open' | 'matched' | 'expired' | 'cancelled';
 
 // ---- Row types (Section 10) ----
-export interface User {
+export type User = {
   id: string;
   phone: string;
   email: string | null;
@@ -108,7 +108,7 @@ export interface User {
   updated_at: string;
 }
 
-export interface Agency {
+export type Agency = {
   id: string;
   admin_id: string;
   name: string;
@@ -122,7 +122,7 @@ export interface Agency {
   created_at: string;
 }
 
-export interface AgencyMember {
+export type AgencyMember = {
   id: string;
   agency_id: string;
   user_id: string;
@@ -132,7 +132,7 @@ export interface AgencyMember {
   joined_at: string | null;
 }
 
-export interface Listing {
+export type Listing = {
   id: string;
   posted_by: string;
   agency_id: string | null;
@@ -175,7 +175,7 @@ export interface Listing {
   updated_at: string;
 }
 
-export interface ListingMedia {
+export type ListingMedia = {
   id: string;
   listing_id: string;
   type: MediaType;
@@ -184,7 +184,7 @@ export interface ListingMedia {
   created_at: string;
 }
 
-export interface Subscription {
+export type Subscription = {
   id: string;
   user_id: string;
   agency_id: string | null;
@@ -199,7 +199,7 @@ export interface Subscription {
   created_at: string;
 }
 
-export interface Enquiry {
+export type Enquiry = {
   id: string;
   listing_id: string;
   agent_id: string;
@@ -212,7 +212,7 @@ export interface Enquiry {
   created_at: string;
 }
 
-export interface IdentityVerification {
+export type IdentityVerification = {
   id: string;
   user_id: string;
   id_type: IdType;
@@ -227,7 +227,7 @@ export interface IdentityVerification {
 }
 
 // ---- Row types (Section 17 — inspection escrow, inspector, area reports) ----
-export interface InspectionSession {
+export type InspectionSession = {
   id: string;
   listing_id: string;
   agent_id: string;
@@ -248,7 +248,7 @@ export interface InspectionSession {
   updated_at: string;
 }
 
-export interface InspectionEvidence {
+export type InspectionEvidence = {
   id: string;
   session_id: string;
   submitted_by: EvidenceSubmittedBy;
@@ -257,7 +257,7 @@ export interface InspectionEvidence {
   uploaded_at: string;
 }
 
-export interface Dispute {
+export type Dispute = {
   id: string;
   session_id: string;
   raised_by: string;
@@ -270,7 +270,7 @@ export interface Dispute {
   resolved_at: string | null;
 }
 
-export interface PersonalInspectionRequest {
+export type PersonalInspectionRequest = {
   id: string;
   listing_id: string;
   renter_id: string;
@@ -283,7 +283,7 @@ export interface PersonalInspectionRequest {
   updated_at: string;
 }
 
-export interface AreaReport {
+export type AreaReport = {
   id: string;
   area_name: string;
   state: string;
@@ -298,7 +298,7 @@ export interface AreaReport {
   created_at?: string;
 }
 
-export interface RenterSearchRequest {
+export type RenterSearchRequest = {
   id: string;
   renter_id: string;
   property_type: string;
@@ -321,9 +321,10 @@ type TableConfig<Row> = {
   Row: Row;
   Insert: Partial<Row>;
   Update: Partial<Row>;
+  Relationships: [];
 };
 
-export interface Database {
+export type Database = {
   public: {
     Tables: {
       users: TableConfig<User>;
