@@ -1,7 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActionSheetIOS,
-  ActivityIndicator,
   Alert,
   Image,
   Linking,
@@ -31,12 +30,19 @@ import type { IdType } from '@/types/database';
 
 type IdSlot = 'front' | 'back';
 
-const ID_TYPES: { label: string; value: IdType; needsBack: boolean }[] = [
+type IdTypeOption = { label: string; value: IdType; needsBack: boolean };
+
+const ALL_ID_TYPES: IdTypeOption[] = [
   { label: 'NIN', value: 'nin', needsBack: false },
   { label: "Driver's licence", value: 'drivers_licence', needsBack: true },
   { label: "Int'l passport", value: 'passport', needsBack: false },
   { label: "Voter's card", value: 'voters_card', needsBack: true },
 ];
+
+// Individual agents only need NIN or Voter's card; agencies can use any.
+const INDIVIDUAL_ID_TYPES: IdTypeOption[] = ALL_ID_TYPES.filter(
+  (t) => t.value === 'nin' || t.value === 'voters_card',
+);
 
 const TERMS_URL = 'https://denhunt.com/terms';
 const CONDUCT_URL = 'https://denhunt.com/code-of-conduct';
@@ -61,10 +67,18 @@ export default function IdentityScreen() {
   const [bvnRaw, setBvnRaw] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [sheetSlot, setSheetSlot] = useState<IdSlot | null>(null);
+  const creepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const selectedType = ID_TYPES.find((t) => t.value === idType) ?? null;
+  // Individual agents see a shorter ID list (NIN / Voter's card only).
+  const idTypes = useMemo(
+    () => (store.role === 'agency_admin' ? ALL_ID_TYPES : INDIVIDUAL_ID_TYPES),
+    [store.role],
+  );
+
+  const selectedType = ALL_ID_TYPES.find((t) => t.value === idType) ?? null;
   const needsBack = selectedType?.needsBack ?? false;
   const maskedBvn =
     bvnRaw.length <= 4 ? bvnRaw : '•'.repeat(bvnRaw.length - 4) + bvnRaw.slice(-4);
@@ -132,10 +146,44 @@ export default function IdentityScreen() {
     return path;
   }
 
+  // Run an async step while creeping the progress % from `from` toward `to`
+  // so the button keeps moving during slow uploads, then snap to `to`.
+  async function runStep<T>(from: number, to: number, task: () => Promise<T>): Promise<T> {
+    setProgress(from);
+    let current = from;
+    creepTimer.current = setInterval(() => {
+      current = Math.min(current + 1, to - 1);
+      setProgress(current);
+    }, 100);
+    try {
+      return await task();
+    } finally {
+      if (creepTimer.current) clearInterval(creepTimer.current);
+      creepTimer.current = null;
+      setProgress(to);
+    }
+  }
+
   async function createAccount() {
     if (!canSubmit || !idType) return;
     setLoading(true);
+    setProgress(0);
     setError(null);
+
+    // Divide 0–95% evenly across the steps that will actually run (the final
+    // 95→100 is set on success). Uploads creep within their slice.
+    const totalSteps =
+      3 + // ID front, user row, identity record
+      (store.profilePhotoUri ? 1 : 0) +
+      (needsBack && backUri ? 1 : 0) +
+      (store.role === 'agency_admin' ? 1 : 0);
+    const span = 95 / totalSteps;
+    let done = 0;
+    const nextRange = () => {
+      const from = Math.round(done * span);
+      done += 1;
+      return [from, Math.round(done * span)] as const;
+    };
 
     let step = 'auth';
     try {
@@ -149,79 +197,92 @@ export default function IdentityScreen() {
       let profilePhotoUrl: string | null = null;
       if (store.profilePhotoUri) {
         step = 'avatar upload';
-        const compressed = await manipulateAsync(
-          store.profilePhotoUri,
-          [{ resize: { width: 500, height: 500 } }],
-          { compress: 0.6, format: SaveFormat.JPEG },
-        );
-        await uploadFile('avatars', `${userId}/avatar.jpg`, compressed.uri, 'image/jpeg');
-        profilePhotoUrl = supabase.storage
-          .from('avatars')
-          .getPublicUrl(`${userId}/avatar.jpg`).data.publicUrl;
+        const [f, t] = nextRange();
+        profilePhotoUrl = await runStep(f, t, async () => {
+          const compressed = await manipulateAsync(
+            store.profilePhotoUri as string,
+            [{ resize: { width: 500, height: 500 } }],
+            { compress: 0.6, format: SaveFormat.JPEG },
+          );
+          await uploadFile('avatars', `${userId}/avatar.jpg`, compressed.uri, 'image/jpeg');
+          return supabase.storage.from('avatars').getPublicUrl(`${userId}/avatar.jpg`).data
+            .publicUrl;
+        });
       }
 
       // 2. ID front → private identity-docs bucket.
       step = 'ID front upload';
-      const idFrontPath = await uploadFile(
-        'identity-docs',
-        `${userId}/id-front.jpg`,
-        frontUri as string,
-        'image/jpeg',
+      const [ff, ft] = nextRange();
+      const idFrontPath = await runStep(ff, ft, () =>
+        uploadFile('identity-docs', `${userId}/id-front.jpg`, frontUri as string, 'image/jpeg'),
       );
 
       // 3. ID back (if applicable).
       let idBackPath: string | null = null;
       if (needsBack && backUri) {
         step = 'ID back upload';
-        idBackPath = await uploadFile('identity-docs', `${userId}/id-back.jpg`, backUri, 'image/jpeg');
+        const [bf, bt] = nextRange();
+        idBackPath = await runStep(bf, bt, () =>
+          uploadFile('identity-docs', `${userId}/id-back.jpg`, backUri, 'image/jpeg'),
+        );
       }
 
       // 4. users row.
       step = 'create user';
-      const { error: userErr } = await supabase.from('users').insert({
-        id: userId,
-        phone: store.phone ?? '',
-        email: store.email,
-        full_name: store.fullName ?? '',
-        profile_photo_url: profilePhotoUrl,
-        role: store.role ?? 'individual_agent',
-        status: 'active',
-        verification_status: 'pending',
-        years_experience: store.yearsExperience,
-        areas: store.areas,
-        property_types: store.propertyTypes,
+      const [uf, ut] = nextRange();
+      await runStep(uf, ut, async () => {
+        const { error: userErr } = await supabase.from('users').insert({
+          id: userId,
+          phone: store.phone ?? '',
+          email: store.email,
+          full_name: store.fullName ?? '',
+          profile_photo_url: profilePhotoUrl,
+          role: store.role ?? 'individual_agent',
+          status: 'active',
+          verification_status: 'pending',
+          years_experience: store.yearsExperience,
+          areas: store.areas,
+          property_types: store.propertyTypes,
+        });
+        if (userErr) throw new Error(`Could not create your profile: ${userErr.message}`);
       });
-      if (userErr) throw new Error(`Could not create your profile: ${userErr.message}`);
 
       // 5. agencies row (agency_admin only).
       if (store.role === 'agency_admin') {
         step = 'create agency';
-        const { error: agencyErr } = await supabase.from('agencies').insert({
-          name: store.agencyName ?? '',
-          cac_number: store.cacNumber,
-          admin_id: userId,
-          status: 'active',
-          verification_status: 'pending',
+        const [af, at] = nextRange();
+        await runStep(af, at, async () => {
+          const { error: agencyErr } = await supabase.from('agencies').insert({
+            name: store.agencyName ?? '',
+            cac_number: store.cacNumber,
+            admin_id: userId,
+            status: 'active',
+            verification_status: 'pending',
+          });
+          if (agencyErr) throw new Error(`Could not create your agency: ${agencyErr.message}`);
         });
-        if (agencyErr) throw new Error(`Could not create your agency: ${agencyErr.message}`);
       }
 
       // 6. identity_verifications row.
       step = 'identity record';
-      // TODO: replace base64 encoding with Supabase Vault before production
-      const g = globalThis as unknown as { btoa?: (s: string) => string };
-      const encryptedBvn = g.btoa ? g.btoa(bvnRaw) : bvnRaw;
-      const { error: idvErr } = await supabase.from('identity_verifications').insert({
-        user_id: userId,
-        id_type: idType,
-        id_front_url: idFrontPath,
-        id_back_url: idBackPath,
-        bvn: encryptedBvn,
-        kyc_status: 'pending',
+      const [idf, idt] = nextRange();
+      await runStep(idf, idt, async () => {
+        // TODO: replace base64 encoding with Supabase Vault before production
+        const g = globalThis as unknown as { btoa?: (s: string) => string };
+        const encryptedBvn = g.btoa ? g.btoa(bvnRaw) : bvnRaw;
+        const { error: idvErr } = await supabase.from('identity_verifications').insert({
+          user_id: userId,
+          id_type: idType,
+          id_front_url: idFrontPath,
+          id_back_url: idBackPath,
+          bvn: encryptedBvn,
+          kyc_status: 'pending',
+        });
+        if (idvErr) throw new Error(`Could not save your verification: ${idvErr.message}`);
       });
-      if (idvErr) throw new Error(`Could not save your verification: ${idvErr.message}`);
 
       // Done — clear onboarding state and enter the app (no going back).
+      setProgress(100);
       store.reset();
       router.replace('/(agent)' as Href);
     } catch (e) {
@@ -229,6 +290,7 @@ export default function IdentityScreen() {
       setError(
         e instanceof Error ? e.message : 'Something went wrong creating your account. Please try again.',
       );
+      setProgress(0);
     } finally {
       setLoading(false);
     }
@@ -277,7 +339,7 @@ export default function IdentityScreen() {
         {/* ID type selector */}
         <Text style={styles.label}>Government ID type</Text>
         <View style={styles.idGrid}>
-          {ID_TYPES.map((t) => {
+          {idTypes.map((t) => {
             const selected = idType === t.value;
             return (
               <Pressable
@@ -378,7 +440,7 @@ export default function IdentityScreen() {
           onPress={createAccount}
           style={[styles.primaryButton, (!canSubmit || loading) && styles.primaryButtonDisabled]}>
           {loading ? (
-            <ActivityIndicator color={colors.white} />
+            <Text style={styles.primaryLabel}>Creating account · {progress}%</Text>
           ) : (
             <Text style={styles.primaryLabel}>Create my account</Text>
           )}

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import {
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -53,16 +54,16 @@ export default function ProfessionalScreen() {
   const [years, setYears] = useState<string | null>(null);
   const [selectedAreas, setSelectedAreas] = useState<string[]>([]);
   const [query, setQuery] = useState('');
+  const [areaDrawerOpen, setAreaDrawerOpen] = useState(false);
   const [selectedTypes, setSelectedTypes] = useState<string[]>([]);
   const [agencyNameLocal, setAgencyNameLocal] = useState('');
   const [cacLocal, setCacLocal] = useState('');
 
+  // Drawer list shows every area matching the search; selected ones show a tick.
   const filteredAreas = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return AREAS.filter(
-      (a) => !selectedAreas.includes(a) && (q === '' || a.toLowerCase().includes(q)),
-    );
-  }, [query, selectedAreas]);
+    return q === '' ? AREAS : AREAS.filter((a) => a.toLowerCase().includes(q));
+  }, [query]);
 
   function toggleType(value: string) {
     setSelectedTypes((prev) =>
@@ -70,13 +71,19 @@ export default function ProfessionalScreen() {
     );
   }
 
-  function addArea(area: string) {
-    setSelectedAreas((prev) => [...prev, area]);
-    setQuery('');
+  function toggleArea(area: string) {
+    setSelectedAreas((prev) =>
+      prev.includes(area) ? prev.filter((a) => a !== area) : [...prev, area],
+    );
   }
 
   function removeArea(area: string) {
     setSelectedAreas((prev) => prev.filter((a) => a !== area));
+  }
+
+  function closeAreaDrawer() {
+    setAreaDrawerOpen(false);
+    setQuery('');
   }
 
   const baseValid = years !== null && selectedAreas.length > 0 && selectedTypes.length > 0;
@@ -142,6 +149,18 @@ export default function ProfessionalScreen() {
         <Text style={[styles.label, styles.sectionGap]}>Areas you cover</Text>
         <Text style={styles.hint}>Select all that apply</Text>
 
+        <Pressable
+          accessibilityRole="button"
+          style={styles.selectorField}
+          onPress={() => setAreaDrawerOpen(true)}>
+          <Text style={selectedAreas.length > 0 ? styles.selectorText : styles.selectorPlaceholder}>
+            {selectedAreas.length > 0
+              ? `${selectedAreas.length} area${selectedAreas.length > 1 ? 's' : ''} selected`
+              : 'Select states or areas'}
+          </Text>
+          <Feather name="chevron-down" size={18} color={colors.gray400} />
+        </Pressable>
+
         {selectedAreas.length > 0 && (
           <View style={styles.chipWrap}>
             {selectedAreas.map((area) => (
@@ -151,25 +170,6 @@ export default function ProfessionalScreen() {
               </Pressable>
             ))}
           </View>
-        )}
-
-        <TextInput
-          style={styles.searchInput}
-          placeholder="Search states or areas..."
-          placeholderTextColor={colors.gray400}
-          value={query}
-          onChangeText={setQuery}
-          autoCorrect={false}
-        />
-
-        {filteredAreas.length > 0 && (
-          <ScrollView style={styles.areaList} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-            {filteredAreas.map((area) => (
-              <Pressable key={area} style={styles.areaItem} onPress={() => addArea(area)}>
-                <Text style={styles.areaItemText}>{area}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
         )}
 
         {/* Property types */}
@@ -231,6 +231,57 @@ export default function ProfessionalScreen() {
           <Text style={styles.primaryLabel}>Continue</Text>
         </Pressable>
       </View>
+
+      {/* Areas bottom drawer */}
+      <Modal
+        visible={areaDrawerOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={closeAreaDrawer}>
+        <View style={styles.drawerBackdropWrap}>
+          <Pressable style={styles.drawerBackdrop} onPress={closeAreaDrawer} />
+          <View style={[styles.drawerSheet, { paddingBottom: insets.bottom + 12 }]}>
+            <View style={styles.drawerHandle} />
+            <View style={styles.drawerHeader}>
+              <Text style={styles.drawerTitle}>Areas you cover</Text>
+              <Pressable accessibilityRole="button" onPress={closeAreaDrawer}>
+                <Feather name="x" size={22} color={colors.gray500} />
+              </Pressable>
+            </View>
+
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search states or areas..."
+              placeholderTextColor={colors.gray400}
+              value={query}
+              onChangeText={setQuery}
+              autoCorrect={false}
+              autoFocus
+            />
+
+            <ScrollView style={styles.drawerList} keyboardShouldPersistTaps="handled">
+              {filteredAreas.map((area) => {
+                const selected = selectedAreas.includes(area);
+                return (
+                  <Pressable key={area} style={styles.areaItem} onPress={() => toggleArea(area)}>
+                    <Text style={styles.areaItemText}>{area}</Text>
+                    {selected && <Feather name="check" size={16} color={colors.blue600} />}
+                  </Pressable>
+                );
+              })}
+              {filteredAreas.length === 0 && (
+                <Text style={styles.drawerEmpty}>No areas match “{query}”.</Text>
+              )}
+            </ScrollView>
+
+            <Pressable style={styles.drawerDone} onPress={closeAreaDrawer}>
+              <Text style={styles.drawerDoneText}>
+                {selectedAreas.length > 0 ? `Done · ${selectedAreas.length} selected` : 'Done'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -297,16 +348,63 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: colors.gray900,
   },
-  areaList: { maxHeight: 220, marginTop: 4 },
+  selectorField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1.5,
+    borderColor: colors.gray200,
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: colors.white,
+    marginTop: 10,
+  },
+  selectorText: { fontFamily: fonts.regular, fontSize: 14, color: colors.gray900 },
+  selectorPlaceholder: { fontFamily: fonts.regular, fontSize: 14, color: colors.gray400 },
   areaItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: colors.gray100,
   },
   areaItemText: { fontFamily: fonts.regular, fontSize: 14, color: colors.gray900 },
+  drawerBackdropWrap: { flex: 1, justifyContent: 'flex-end' },
+  drawerBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  drawerSheet: {
+    backgroundColor: colors.white,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    maxHeight: '80%',
+  },
+  drawerHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 9999,
+    backgroundColor: colors.gray200,
+    marginBottom: 12,
+  },
+  drawerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  drawerTitle: { fontFamily: fonts.semibold, fontSize: 18, color: colors.gray900, letterSpacing: -0.2 },
+  drawerList: { marginTop: 12 },
+  drawerEmpty: { fontFamily: fonts.regular, fontSize: 14, color: colors.gray500, paddingVertical: 16 },
+  drawerDone: {
+    marginTop: 12,
+    backgroundColor: colors.blue600,
+    borderRadius: 12,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  drawerDoneText: { fontFamily: fonts.semibold, fontSize: 15, color: colors.white },
   agencySection: { marginTop: 8 },
   field: { marginTop: 16 },
   input: {
