@@ -1,10 +1,8 @@
 import { Stack } from 'expo-router';
 import { colors } from '@/constants/colors';
 
-// Groups enquiries/index and [id] into one "Enquiries" tab. gestureEnabled
-// false on [id] so iOS swipe-back can't return to wherever the user came from
-// — the detail screen uses an explicit router.push('/(agent)/enquiries') back.
-export default function EnquiriesLayout() {
+// Conversations list + chat threads. Hidden from the tab bar (see (agent)/_layout).
+export default function ChatLayout() {
   return (
     <Stack
       screenOptions={{

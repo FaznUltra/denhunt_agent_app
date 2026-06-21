@@ -464,9 +464,30 @@ The agent sees all enquiries in an Inbox section of the app:
 	•	Each enquiry card shows: enquirer name, phone, listing title, time received, status
 	•	Status options: New, Contacted, Inspection Scheduled, Deal Closed, Not Interested
 	•	Agent taps an enquiry to see full details and update status
-	•	Quick actions: Call (opens phone dialler), WhatsApp (deep link to WhatsApp chat), Mark as Contacted
+	•	Quick actions: Schedule inspection, Mark as Contacted, Call (secondary). NO WhatsApp/SMS/email links — see §6.4. Chat opens only after the renter pays the inspection fee (escrow), see §6.5.
 	•	Filter by: listing, status, date
 	•	New enquiries trigger a push notification
+
+6.4 In-App Communication & Anti-Fraud Policy (DIRECTIVE)
+All renter↔agent communication MUST happen inside DenHunt. This is a core anti-fraud measure: conversations and transactions that move to WhatsApp/SMS/email cannot be moderated or monitored, scams proliferate, and DenHunt's trust guarantee collapses. Keeping comms on-platform is also the foundation of trust infrastructure (moderation, reporting, real-time intervention, conversion analytics).
+- No external communication deep links (WhatsApp/SMS/mailto) as actions anywhere. The in-app chat is the channel. A phone "Call" affordance may remain as a secondary action only.
+- Every message is stored on-platform for moderation, dispute review, and escrow evidence (§14). Users can report a message or a conversation.
+- If a user goes off-platform and is defrauded, DenHunt is not responsible — but the product must never push them off-platform.
+
+6.5 Chat is escrow-gated and lives inside an inspection session
+Chat is NOT standalone. The flow:
+1. Enquiry — renter submits the form (name + interest only; phone NOT shared yet).
+2. Agent schedules an inspection (date). Renter gets push + email.
+3. Renter pays the inspection fee → held in escrow. This unlocks the chat for both parties. Until then only names are shown — no phone/personal details.
+4. Chat opens. Real-time, WhatsApp-grade: text + image + system messages, optimistic send, read receipts, typing indicator, keyboard-safe input, swipe-to-reply (Phase 1).
+5. Reschedule is a dynamic in-chat negotiation: either side proposes a new date; the other accepts or counter-proposes. Confirmed only on mutual agreement.
+6. Inspection happens (6-digit code, §14) → 8-hour escrow countdown → released to agent, or refunded on dispute.
+
+Data model (escrow-gated chat):
+- inspection_sessions — conversation spine: id, enquiry_id, listing_id, agent_id, renter_id (nullable Phase 1), renter_name, inspection_fee, inspection_code, scheduled_date, status (scheduled | reschedule_pending | escrow_held | in_progress | completed | disputed | refunded | cancelled), proposed_date, proposed_by (agent|renter), chat_unlocked, code_confirmed_at, escrow_release_at, last_message, last_message_at, paystack_reference, created_at, updated_at
+- messages — id, session_id, sender_role (agent|renter|system), sender_id, type (text|image|system), body, image_url, reply_to (→ messages.id), created_at, read_at
+- Real-time via Supabase Realtime; typing via Realtime presence; optimistic send on the client.
+- Renter side: Phase 1 web listing page (Phase 2 renter app). Agent side built now; seed/mock data drives all phases.
 
 SECTION 7 — AGENT PROFILE & PUBLIC PAGE
 

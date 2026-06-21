@@ -30,6 +30,28 @@ import type { IdType } from '@/types/database';
 
 type IdSlot = 'front' | 'back';
 
+// A picked ID document — image, PDF, or Word doc.
+type PickedFile = { uri: string; name: string; mimeType: string; ext: string; isImage: boolean };
+
+const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10MB
+
+// Whitelisted upload types (images, PDF, Word). Real malware scanning must
+// happen server-side before verification — see TODO in createAccount.
+const ACCEPTED_DOC_TYPES = [
+  'image/*',
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+];
+
+function extFromName(name: string, mimeType: string): string {
+  const fromName = name.includes('.') ? name.split('.').pop()?.toLowerCase() : undefined;
+  if (fromName) return fromName;
+  if (mimeType === 'application/pdf') return 'pdf';
+  if (mimeType.startsWith('image/')) return mimeType.split('/')[1] ?? 'jpg';
+  return 'bin';
+}
+
 type IdTypeOption = { label: string; value: IdType; needsBack: boolean };
 
 const ALL_ID_TYPES: IdTypeOption[] = [
@@ -62,8 +84,11 @@ export default function IdentityScreen() {
   const store = useOnboardingStore();
 
   const [idType, setIdType] = useState<IdType | null>(null);
-  const [frontUri, setFrontUri] = useState<string | null>(null);
-  const [backUri, setBackUri] = useState<string | null>(null);
+  // Files are kept per ID type so switching types preserves each one's uploads
+  // without ever showing one type's file under another.
+  const [filesByType, setFilesByType] = useState<
+    Partial<Record<IdType, { front: PickedFile | null; back: PickedFile | null }>>
+  >({});
   const [bvnRaw, setBvnRaw] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -80,15 +105,31 @@ export default function IdentityScreen() {
 
   const selectedType = ALL_ID_TYPES.find((t) => t.value === idType) ?? null;
   const needsBack = selectedType?.needsBack ?? false;
+  const frontFile = idType ? (filesByType[idType]?.front ?? null) : null;
+  const backFile = idType ? (filesByType[idType]?.back ?? null) : null;
   const maskedBvn =
     bvnRaw.length <= 4 ? bvnRaw : '•'.repeat(bvnRaw.length - 4) + bvnRaw.slice(-4);
 
   const canSubmit =
     idType !== null &&
-    frontUri !== null &&
-    (!needsBack || backUri !== null) &&
+    frontFile !== null &&
+    (!needsBack || backFile !== null) &&
     bvnRaw.length === 11 &&
     agreed;
+
+  // The first unmet requirement, shown under the button so the user knows
+  // exactly why it's disabled (the Terms checkbox is easy to miss).
+  const missingReason = !idType
+    ? 'Select your ID type'
+    : !frontFile
+      ? 'Upload the front of your ID'
+      : needsBack && !backFile
+        ? 'Upload the back of your ID'
+        : bvnRaw.length !== 11
+          ? 'Enter your 11-digit BVN'
+          : !agreed
+            ? 'Tick the box to accept the Terms to continue'
+            : null;
 
   function handleBvnChange(text: string) {
     if (text.length < maskedBvn.length) {
@@ -99,9 +140,20 @@ export default function IdentityScreen() {
     }
   }
 
-  function setUriForSlot(slot: IdSlot, uri: string) {
-    if (slot === 'front') setFrontUri(uri);
-    else setBackUri(uri);
+  function setFileForSlot(slot: IdSlot, file: PickedFile) {
+    if (!idType) return;
+    setFilesByType((prev) => {
+      const current = prev[idType] ?? { front: null, back: null };
+      return { ...prev, [idType]: { ...current, [slot]: file } };
+    });
+  }
+
+  function withinSize(bytes?: number | null): boolean {
+    if (bytes != null && bytes > MAX_FILE_BYTES) {
+      Alert.alert('File too large', 'Please choose a file under 10MB.');
+      return false;
+    }
+    return true;
   }
 
   async function captureWithCamera(slot: IdSlot) {
@@ -111,24 +163,67 @@ export default function IdentityScreen() {
       return;
     }
     const res = await ImagePicker.launchCameraAsync({ quality: 1 });
-    if (!res.canceled) setUriForSlot(slot, res.assets[0].uri);
+    if (res.canceled) return;
+    const a = res.assets[0];
+    if (!withinSize(a.fileSize)) return;
+    setFileForSlot(slot, {
+      uri: a.uri,
+      name: a.fileName ?? 'photo.jpg',
+      mimeType: a.mimeType ?? 'image/jpeg',
+      ext: 'jpg',
+      isImage: true,
+    });
+  }
+
+  async function pickFromGallery(slot: IdSlot) {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Photo access needed', 'Please allow photo access in your device settings.');
+      return;
+    }
+    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    if (res.canceled) return;
+    const a = res.assets[0];
+    if (!withinSize(a.fileSize)) return;
+    const mimeType = a.mimeType ?? 'image/jpeg';
+    setFileForSlot(slot, {
+      uri: a.uri,
+      name: a.fileName ?? `id.${extFromName('', mimeType)}`,
+      mimeType,
+      ext: extFromName(a.fileName ?? '', mimeType),
+      isImage: true,
+    });
   }
 
   async function pickDocument(slot: IdSlot) {
     const res = await DocumentPicker.getDocumentAsync({
-      type: ['image/*', 'application/pdf'],
+      type: ACCEPTED_DOC_TYPES,
       copyToCacheDirectory: true,
     });
-    if (!res.canceled && res.assets?.[0]) setUriForSlot(slot, res.assets[0].uri);
+    if (res.canceled || !res.assets?.[0]) return;
+    const a = res.assets[0];
+    if (!withinSize(a.size)) return;
+    const mimeType = a.mimeType ?? 'application/octet-stream';
+    setFileForSlot(slot, {
+      uri: a.uri,
+      name: a.name,
+      mimeType,
+      ext: extFromName(a.name, mimeType),
+      isImage: mimeType.startsWith('image/'),
+    });
   }
 
   function openUploadActions(slot: IdSlot) {
     if (Platform.OS === 'ios') {
       ActionSheetIOS.showActionSheetWithOptions(
-        { options: ['Take photo', 'Upload from files', 'Cancel'], cancelButtonIndex: 2 },
+        {
+          options: ['Take photo', 'Choose from gallery', 'Upload a file', 'Cancel'],
+          cancelButtonIndex: 3,
+        },
         (i) => {
           if (i === 0) captureWithCamera(slot);
-          else if (i === 1) pickDocument(slot);
+          else if (i === 1) pickFromGallery(slot);
+          else if (i === 2) pickDocument(slot);
         },
       );
     } else {
@@ -165,7 +260,7 @@ export default function IdentityScreen() {
   }
 
   async function createAccount() {
-    if (!canSubmit || !idType) return;
+    if (!canSubmit || !idType || !frontFile) return;
     setLoading(true);
     setProgress(0);
     setError(null);
@@ -175,7 +270,7 @@ export default function IdentityScreen() {
     const totalSteps =
       3 + // ID front, user row, identity record
       (store.profilePhotoUri ? 1 : 0) +
-      (needsBack && backUri ? 1 : 0) +
+      (needsBack && backFile ? 1 : 0) +
       (store.role === 'agency_admin' ? 1 : 0);
     const span = 95 / totalSteps;
     let done = 0;
@@ -211,19 +306,21 @@ export default function IdentityScreen() {
       }
 
       // 2. ID front → private identity-docs bucket.
+      // TODO: scan uploaded docs server-side (Edge Function + scan API) before
+      // an admin marks the user verified — client can only whitelist type/size.
       step = 'ID front upload';
       const [ff, ft] = nextRange();
       const idFrontPath = await runStep(ff, ft, () =>
-        uploadFile('identity-docs', `${userId}/id-front.jpg`, frontUri as string, 'image/jpeg'),
+        uploadFile('identity-docs', `${userId}/id-front.${frontFile.ext}`, frontFile.uri, frontFile.mimeType),
       );
 
       // 3. ID back (if applicable).
       let idBackPath: string | null = null;
-      if (needsBack && backUri) {
+      if (needsBack && backFile) {
         step = 'ID back upload';
         const [bf, bt] = nextRange();
         idBackPath = await runStep(bf, bt, () =>
-          uploadFile('identity-docs', `${userId}/id-back.jpg`, backUri, 'image/jpeg'),
+          uploadFile('identity-docs', `${userId}/id-back.${backFile.ext}`, backFile.uri, backFile.mimeType),
         );
       }
 
@@ -344,10 +441,7 @@ export default function IdentityScreen() {
             return (
               <Pressable
                 key={t.value}
-                onPress={() => {
-                  setIdType(t.value);
-                  setBackUri(null);
-                }}
+                onPress={() => setIdType(t.value)}
                 style={[styles.idCard, selected && styles.idCardSelected]}>
                 <Text style={[styles.idCardText, selected && styles.idCardTextSelected]}>
                   {t.label}
@@ -364,13 +458,13 @@ export default function IdentityScreen() {
             <View style={styles.uploadRow}>
               <UploadBox
                 label="Front of ID"
-                uri={frontUri}
+                file={frontFile}
                 onPress={() => openUploadActions('front')}
               />
               {needsBack && (
                 <UploadBox
                   label="Back of ID"
-                  uri={backUri}
+                  file={backFile}
                   onPress={() => openUploadActions('back')}
                 />
               )}
@@ -433,6 +527,9 @@ export default function IdentityScreen() {
 
       {/* Bottom CTA */}
       <View style={[styles.bottom, { paddingBottom: insets.bottom + 16 }]}>
+        {!canSubmit && !loading && missingReason ? (
+          <Text style={styles.missingHint}>{missingReason}</Text>
+        ) : null}
         <Pressable
           accessibilityRole="button"
           accessibilityState={{ disabled: !canSubmit || loading }}
@@ -470,10 +567,20 @@ export default function IdentityScreen() {
               onPress={() => {
                 const slot = sheetSlot;
                 setSheetSlot(null);
+                if (slot) pickFromGallery(slot);
+              }}>
+              <Feather name="image" size={20} color={colors.gray700} />
+              <Text style={styles.sheetItemText}>Choose from gallery</Text>
+            </Pressable>
+            <Pressable
+              style={styles.sheetItem}
+              onPress={() => {
+                const slot = sheetSlot;
+                setSheetSlot(null);
                 if (slot) pickDocument(slot);
               }}>
               <Feather name="file" size={20} color={colors.gray700} />
-              <Text style={styles.sheetItemText}>Upload from files</Text>
+              <Text style={styles.sheetItemText}>Upload a file</Text>
             </Pressable>
             <Pressable style={styles.sheetCancel} onPress={() => setSheetSlot(null)}>
               <Text style={styles.sheetCancelText}>Cancel</Text>
@@ -488,18 +595,27 @@ export default function IdentityScreen() {
 // Single ID upload box (front or back).
 function UploadBox({
   label,
-  uri,
+  file,
   onPress,
 }: {
   label: string;
-  uri: string | null;
+  file: PickedFile | null;
   onPress: () => void;
 }) {
   return (
     <Pressable style={styles.uploadBox} onPress={onPress}>
-      {uri ? (
+      {file ? (
         <>
-          <Image source={{ uri }} style={styles.uploadThumb} resizeMode="cover" />
+          {file.isImage ? (
+            <Image source={{ uri: file.uri }} style={styles.uploadThumb} resizeMode="cover" />
+          ) : (
+            <View style={styles.uploadDoc}>
+              <Feather name="file-text" size={24} color={colors.blue600} />
+              <Text style={styles.uploadDocName} numberOfLines={1}>
+                {file.name}
+              </Text>
+            </View>
+          )}
           <View style={styles.uploadCheck}>
             <Feather name="check-circle" size={16} color={colors.successText} />
           </View>
@@ -569,6 +685,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   uploadThumb: { ...StyleSheet.absoluteFillObject },
+  uploadDoc: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, gap: 6 },
+  uploadDocName: { fontFamily: fonts.medium, fontSize: 11, color: colors.gray700, textAlign: 'center' },
   uploadCheck: {
     position: 'absolute',
     top: 6,
@@ -624,6 +742,7 @@ const styles = StyleSheet.create({
   },
   errorText: { fontFamily: fonts.regular, fontSize: 13, color: colors.errorText, flex: 1 },
   bottom: { paddingHorizontal: 20, paddingTop: 12 },
+  missingHint: { fontFamily: fonts.regular, fontSize: 12, color: colors.gray500, textAlign: 'center', marginBottom: 8 },
   primaryButton: {
     width: '100%',
     backgroundColor: colors.blue600,

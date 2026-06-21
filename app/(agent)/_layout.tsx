@@ -85,8 +85,9 @@ export default function AgentLayout() {
           tabBarIcon: ({ color }) => <Feather name="user" size={22} color={color} />,
         }}
       />
-      {/* Team is reachable from the dashboard, not the tab bar. */}
+      {/* Team + chat are reached from other screens, not the tab bar. */}
       <Tabs.Screen name="team" options={{ href: null }} />
+      <Tabs.Screen name="chat" options={{ href: null }} />
     </Tabs>
   );
 }

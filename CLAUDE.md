@@ -26,6 +26,12 @@ React Native mobile app. Expo SDK 54. Light mode only. TypeScript.
 - All Supabase calls go through `/src/lib/supabase.ts`
 - Never store sensitive data in AsyncStorage unencrypted
 
+## Product principle — communication stays on-platform (anti-fraud, non-negotiable)
+- All renter↔agent communication and transactions MUST happen inside DenHunt so they can be moderated, reviewed in disputes, and used as escrow evidence.
+- Do NOT add external comm deep links (WhatsApp / SMS / mailto) as actions. The in-app chat is the channel. A phone "Call" affordance may remain as a secondary action only.
+- Chat is gated behind escrow: a conversation only unlocks after the renter pays the inspection fee (held in escrow). Chat lives inside an `inspection_sessions` record, not a standalone table.
+- Real-time via Supabase Realtime; WhatsApp-grade UX (optimistic send, read receipts, typing, keyboard-safe input, swipe-to-reply) is Phase 1. See PRD §6.4–6.5 and §14.
+
 ## User roles
 individual_agent | agency_admin | agency_agent | renter | personal_inspector | admin
 

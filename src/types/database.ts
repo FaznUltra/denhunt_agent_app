@@ -170,6 +170,7 @@ export type Listing = {
   rejection_reason: string | null;
   views_count: number;
   enquiries_count: number;
+  inspection_fee: number | null;
   expires_at: string | null;
   created_at: string;
   updated_at: string;
@@ -226,26 +227,57 @@ export type IdentityVerification = {
   created_at: string;
 }
 
-// ---- Row types (Section 17 — inspection escrow, inspector, area reports) ----
+// ---- Row types (Section 6.5 / 17 — escrow-gated chat + inspection escrow) ----
+// Status drives the escrow-gated chat flow (PRD §6.5).
+export type SessionStatus =
+  | 'scheduled'
+  | 'reschedule_pending'
+  | 'escrow_held'
+  | 'in_progress'
+  | 'completed'
+  | 'disputed'
+  | 'refunded'
+  | 'cancelled';
+
+export type ProposedBy = 'agent' | 'renter';
+
 export type InspectionSession = {
   id: string;
+  enquiry_id: string | null;
   listing_id: string;
   agent_id: string;
-  renter_id: string;
+  renter_id: string | null;
+  renter_name: string;
   inspection_fee: number;
-  inspection_code: string; // 6-digit, hashed at rest
-  scheduled_date: string;
-  status: InspectionSessionStatus;
+  inspection_code: string | null;
+  scheduled_date: string | null;
+  status: SessionStatus;
+  proposed_date: string | null;
+  proposed_by: ProposedBy | null;
+  chat_unlocked: boolean;
   code_confirmed_at: string | null;
   escrow_release_at: string | null;
-  renter_gps_lat: number | null;
-  renter_gps_lng: number | null;
-  agent_gps_lat: number | null;
-  agent_gps_lng: number | null;
-  gps_proximity_metres: number | null;
+  last_message: string | null;
+  last_message_at: string | null;
   paystack_reference: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export type MessageSenderRole = 'agent' | 'renter' | 'system';
+export type MessageType = 'text' | 'image' | 'system';
+
+export type Message = {
+  id: string;
+  session_id: string;
+  sender_role: MessageSenderRole;
+  sender_id: string | null;
+  type: MessageType;
+  body: string | null;
+  image_url: string | null;
+  reply_to: string | null;
+  created_at: string;
+  read_at: string | null;
 }
 
 export type InspectionEvidence = {
@@ -336,6 +368,7 @@ export type Database = {
       enquiries: TableConfig<Enquiry>;
       identity_verifications: TableConfig<IdentityVerification>;
       inspection_sessions: TableConfig<InspectionSession>;
+      messages: TableConfig<Message>;
       inspection_evidence: TableConfig<InspectionEvidence>;
       disputes: TableConfig<Dispute>;
       personal_inspection_requests: TableConfig<PersonalInspectionRequest>;
