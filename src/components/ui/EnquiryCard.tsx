@@ -1,9 +1,9 @@
-import { Alert, Linking, Pressable, Text, View, StyleSheet } from 'react-native';
+import { Pressable, Text, View, StyleSheet } from 'react-native';
 import Feather from '@expo/vector-icons/Feather';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
 import { Avatar } from './Avatar';
-import { formatDate, formatPrice, formatRelativeDate, toWhatsappNumber } from '@/utils/format';
+import { formatDate, formatPrice, formatRelativeDate } from '@/utils/format';
 import { getEnquiryStatusBadge } from '@/utils/statusBadge';
 import type { Enquiry, EnquiryStatus } from '@/types/enquiries';
 
@@ -20,14 +20,6 @@ const ACCENT: Record<EnquiryStatus, string> = {
   closed: colors.gray400,
   not_interested: colors.gray200,
 };
-
-async function openLink(url: string) {
-  try {
-    await Linking.openURL(url);
-  } catch {
-    Alert.alert("Couldn't open", 'Please try manually.');
-  }
-}
 
 // Enquiry summary card for the inbox. See docs/denhunt-design-system.md.
 export default function EnquiryCard({ enquiry, onPress, onStatusChange }: EnquiryCardProps) {
@@ -96,16 +88,6 @@ export default function EnquiryCard({ enquiry, onPress, onStatusChange }: Enquir
               <Text style={styles.markPillText}>Mark contacted</Text>
             </Pressable>
           ) : null}
-          <Pressable
-            style={styles.iconBtn}
-            onPress={() => openLink(`tel:${enquiry.enquirer_phone}`)}>
-            <Feather name="phone" size={15} color={colors.successText} />
-          </Pressable>
-          <Pressable
-            style={styles.iconBtn}
-            onPress={() => openLink(`whatsapp://send?phone=${toWhatsappNumber(enquiry.enquirer_phone)}`)}>
-            <Feather name="message-circle" size={15} color={colors.successText} />
-          </Pressable>
         </View>
       </View>
     </Pressable>
@@ -155,12 +137,4 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
   },
   markPillText: { fontFamily: fonts.medium, fontSize: 11, color: colors.blue600 },
-  iconBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 8,
-    backgroundColor: colors.successBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
 });

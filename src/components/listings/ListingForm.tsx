@@ -721,6 +721,8 @@ export function ListingForm({ listingId: editId, onComplete }: ListingFormProps)
                 }}
                 style={styles.iosPicker}
                 accentColor={colors.blue600}
+                themeVariant="light"
+                textColor={colors.gray900}
               />
               <Pressable style={styles.dateDone} onPress={confirmDate}>
                 <Text style={styles.dateDoneText}>Done</Text>

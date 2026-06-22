@@ -13,6 +13,24 @@ export type ReplyTarget = {
   senderRole: MessageSenderRole;
 };
 
+export type EvidenceItem = {
+  id: string;
+  submitted_by: 'agent' | 'renter';
+  type: 'photo' | 'video';
+  url: string;
+  uploaded_at: string;
+};
+
+export type DisputeInfo = {
+  id: string;
+  reason: string;
+  description: string | null;
+  status: string;
+  created_at: string;
+  renter_evidence: EvidenceItem[];
+  agent_evidence: EvidenceItem[];
+};
+
 // Conversation summary for the conversations list.
 export type Conversation = {
   id: string; // inspection_session id

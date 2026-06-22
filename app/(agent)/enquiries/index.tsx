@@ -96,9 +96,18 @@ export default function EnquiriesScreen() {
       <View style={styles.headerCard}>
         <View style={styles.titleRow}>
           <Text style={styles.title}>Enquiries</Text>
-          <Pressable accessibilityRole="button" style={styles.iconButton} onPress={toggleSearch}>
-            <Feather name="search" size={18} color={colors.gray500} />
-          </Pressable>
+          <View style={styles.headerBtns}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Messages"
+              style={styles.iconButton}
+              onPress={() => router.push('/(agent)/chat' as Href)}>
+              <Feather name="message-circle" size={18} color={colors.gray500} />
+            </Pressable>
+            <Pressable accessibilityRole="button" style={styles.iconButton} onPress={toggleSearch}>
+              <Feather name="search" size={18} color={colors.gray500} />
+            </Pressable>
+          </View>
         </View>
 
         <Animated.View style={[styles.searchWrap, { height: searchHeight }]}>
@@ -230,6 +239,7 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   title: { fontFamily: fonts.bold, fontSize: 22, color: colors.gray900, letterSpacing: -0.3 },
+  headerBtns: { flexDirection: 'row', gap: 8 },
   iconButton: {
     width: 36,
     height: 36,

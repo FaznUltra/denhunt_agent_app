@@ -31,9 +31,13 @@ export async function verifyOTP(phone: string, token: string) {
   return data;
 }
 
-/** Sign the current user out and clear the persisted session. */
+/**
+ * Sign the current user out. Uses local scope so the on-device session is
+ * always cleared even if the network call to revoke it server-side fails —
+ * otherwise a stale session can bounce the user straight back into the app.
+ */
 export async function signOut() {
-  const { error } = await supabase.auth.signOut();
+  const { error } = await supabase.auth.signOut({ scope: 'local' });
   if (error) throw error;
 }
 

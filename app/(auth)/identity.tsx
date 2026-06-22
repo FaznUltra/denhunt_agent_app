@@ -334,7 +334,7 @@ export default function IdentityScreen() {
           email: store.email,
           full_name: store.fullName ?? '',
           profile_photo_url: profilePhotoUrl,
-          role: store.role ?? 'individual_agent',
+          role: store.inviteToken ? 'agency_agent' : (store.role ?? 'individual_agent'),
           status: 'active',
           verification_status: 'pending',
           years_experience: store.yearsExperience,
@@ -358,6 +358,27 @@ export default function IdentityScreen() {
           });
           if (agencyErr) throw new Error(`Could not create your agency: ${agencyErr.message}`);
         });
+      }
+
+      // 5b. Agency invite: claim the pending agency_members slot (agency_agent).
+      if (store.inviteToken) {
+        step = 'link agency';
+        const { data: claimed, error: claimErr } = await supabase
+          .from('agency_members')
+          .update({
+            user_id: userId,
+            status: 'active',
+            joined_at: new Date().toISOString(),
+            invite_token: null,
+          })
+          .eq('invite_token', store.inviteToken)
+          .eq('status', 'invited')
+          .select('id');
+        if (claimErr) throw new Error(`Could not join the agency: ${claimErr.message}`);
+        if (!claimed || claimed.length === 0) {
+          // Race: another signup used it, or it expired/was cancelled.
+          Alert.alert('Invite link is no longer valid.', 'You can still use DenHunt as an individual agent.');
+        }
       }
 
       // 6. identity_verifications row.

@@ -125,11 +125,14 @@ export type Agency = {
 export type AgencyMember = {
   id: string;
   agency_id: string;
-  user_id: string;
-  invite_token: string;
-  invite_expires_at: string;
+  user_id: string | null; // null = pending invite slot
+  invite_token: string | null;
+  invite_expires_at: string | null;
   status: AgencyMemberStatus;
   joined_at: string | null;
+  removed_at: string | null;
+  removed_by: string | null;
+  removal_reason: string | null;
 }
 
 export type Listing = {
@@ -260,6 +263,12 @@ export type InspectionSession = {
   last_message: string | null;
   last_message_at: string | null;
   paystack_reference: string | null;
+  scheduled_time: string | null;
+  renter_gps_lat: number | null;
+  renter_gps_lng: number | null;
+  agent_gps_lat: number | null;
+  agent_gps_lng: number | null;
+  gps_proximity_metres: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -276,6 +285,7 @@ export type Message = {
   body: string | null;
   image_url: string | null;
   reply_to: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
   read_at: string | null;
 }
@@ -288,6 +298,45 @@ export type InspectionEvidence = {
   url: string;
   uploaded_at: string;
 }
+
+export type DeviceToken = {
+  id: string;
+  user_id: string;
+  token: string;
+  platform: 'ios' | 'android';
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NotificationType =
+  | 'new_message'
+  | 'inspection_scheduled'
+  | 'escrow_released'
+  | 'dispute_raised'
+  | 'dispute_resolved'
+  | 'listing_approved'
+  | 'listing_rejected'
+  | 'verification_complete';
+
+export type NotificationRow = {
+  id: string;
+  user_id: string;
+  title: string;
+  body: string;
+  type: string;
+  data: Record<string, string> | null;
+  is_read: boolean;
+  created_at: string;
+};
+
+export type DisputeResponse = {
+  id: string;
+  dispute_id: string;
+  submitted_by: string | null;
+  statement: string | null;
+  created_at: string;
+};
 
 export type Dispute = {
   id: string;
@@ -371,6 +420,9 @@ export type Database = {
       messages: TableConfig<Message>;
       inspection_evidence: TableConfig<InspectionEvidence>;
       disputes: TableConfig<Dispute>;
+      dispute_responses: TableConfig<DisputeResponse>;
+      device_tokens: TableConfig<DeviceToken>;
+      notifications: TableConfig<NotificationRow>;
       personal_inspection_requests: TableConfig<PersonalInspectionRequest>;
       area_reports: TableConfig<AreaReport>;
       renter_search_requests: TableConfig<RenterSearchRequest>;

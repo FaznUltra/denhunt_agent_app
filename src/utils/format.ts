@@ -82,6 +82,17 @@ export const AMENITY_LABELS: Record<string, string> = {
 
 export const amenityLabel = (value: string): string => AMENITY_LABELS[value] ?? capitalizeWords(value);
 
+// Mask a phone for display: keep first 4 and last 3 digits, e.g. "0801 *** 789".
+export const maskPhone = (phone: string): string =>
+  phone.length >= 7 ? `${phone.slice(0, 4)} *** ${phone.slice(-3)}` : phone;
+
+// Month + year, e.g. "Jun 2026".
+export const formatMonthYear = (dateString: string): string => {
+  const d = new Date(dateString);
+  if (Number.isNaN(d.getTime())) return '–';
+  return `${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
+};
+
 // Normalise a Nigerian phone to WhatsApp format (234XXXXXXXXXX, no +).
 export const toWhatsappNumber = (phone: string): string => {
   const digits = phone.replace(/\D/g, '');

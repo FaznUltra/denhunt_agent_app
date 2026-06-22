@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import type { UserRole } from '@/types/database';
 
-// Roles a user can self-register as (agency_agent joins by invite only).
+// Roles a user can self-register as. agency_agent is not selectable — it is
+// derived from an invite token (see inviteToken) during account creation.
 export type OnboardingRole = Extract<UserRole, 'individual_agent' | 'agency_admin'>;
 
 // Holds onboarding answers across the 6-step flow so we don't thread every
@@ -23,6 +24,8 @@ interface OnboardingState {
   idFrontUri: string | null;
   idBackUri: string | null;
   bvn: string | null;
+  // Agency invite (agency_agent joining via link).
+  inviteToken: string | null;
 
   setRole: (role: OnboardingRole) => void;
   setPhone: (phone: string) => void;
@@ -38,6 +41,7 @@ interface OnboardingState {
   setIdFrontUri: (idFrontUri: string | null) => void;
   setIdBackUri: (idBackUri: string | null) => void;
   setBvn: (bvn: string) => void;
+  setInviteToken: (inviteToken: string | null) => void;
   reset: () => void;
 }
 
@@ -56,6 +60,7 @@ const initialState = {
   idFrontUri: null,
   idBackUri: null,
   bvn: null,
+  inviteToken: null,
 } satisfies Partial<OnboardingState>;
 
 export const useOnboardingStore = create<OnboardingState>((set) => ({
@@ -74,5 +79,6 @@ export const useOnboardingStore = create<OnboardingState>((set) => ({
   setIdFrontUri: (idFrontUri) => set({ idFrontUri }),
   setIdBackUri: (idBackUri) => set({ idBackUri }),
   setBvn: (bvn) => set({ bvn }),
+  setInviteToken: (inviteToken) => set({ inviteToken }),
   reset: () => set(initialState),
 }));

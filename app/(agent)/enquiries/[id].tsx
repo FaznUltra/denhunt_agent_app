@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import {
   Alert,
   Image,
-  Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -10,18 +11,16 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
+import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
 import { Avatar, SectionLabel, Skeleton } from '@/components/ui';
-import { formatDate, formatPrice, formatRelativeDate, paymentPeriod, toWhatsappNumber } from '@/utils/format';
+import { formatDate, formatPrice, formatRelativeDate, paymentPeriod } from '@/utils/format';
 import { getEnquiryStatusBadge, ENQUIRY_DOT } from '@/utils/statusBadge';
 import { useEnquiryDetail } from '@/hooks/useEnquiryDetail';
 import { supabase } from '@/lib/supabase';
 import type { EnquiryStatus } from '@/types/enquiries';
-
-// One-off brand colour — not in design system palette.
-const WHATSAPP_GREEN = '#25D366';
 
 const ENQUIRIES_HREF = '/(agent)/enquiries' as Href;
 
@@ -33,44 +32,60 @@ const STATUS_OPTIONS: { value: EnquiryStatus; label: string; desc: string }[] = 
   { value: 'not_interested', label: 'Not interested', desc: 'Renter no longer interested' },
 ];
 
-async function openLink(url: string) {
-  try {
-    await Linking.openURL(url);
-  } catch {
-    Alert.alert("Couldn't open", 'Please try manually.');
-  }
-}
-
 export default function EnquiryDetailScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const { enquiry, listing, loading, error, refetch } = useEnquiryDetail(id);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [tempDate, setTempDate] = useState(new Date());
+  const [scheduling, setScheduling] = useState(false);
 
   function backToInbox() {
     router.push(ENQUIRIES_HREF);
   }
 
-  function callPhone() {
-    if (enquiry) openLink(`tel:${enquiry.enquirer_phone}`);
-  }
-
-  function whatsapp() {
+  // Schedule an inspection → creates the inspection session (chat stays locked
+  // until the renter pays the fee into escrow). See PRD §6.5.
+  async function createSession(date: Date) {
     if (!enquiry) return;
-    const text = encodeURIComponent(
-      `Hi ${enquiry.enquirer_name}, I'm reaching out about your enquiry for ${listing?.title ?? 'your enquiry'} on DenHunt.`,
-    );
-    openLink(`whatsapp://send?phone=${toWhatsappNumber(enquiry.enquirer_phone)}&text=${text}`);
-  }
-
-  function email() {
-    if (!enquiry) return;
-    if (!enquiry.enquirer_email) {
-      Alert.alert('No email address provided');
-      return;
+    setScheduling(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not authenticated');
+      const iso = date.toISOString().slice(0, 10);
+      const { data, error: e } = await supabase
+        .from('inspection_sessions')
+        .insert({
+          enquiry_id: enquiry.id,
+          listing_id: enquiry.listing_id,
+          agent_id: user.id,
+          renter_name: enquiry.enquirer_name,
+          inspection_fee: listing?.inspection_fee ?? 0,
+          scheduled_date: iso,
+          status: 'scheduled',
+          chat_unlocked: false,
+        })
+        .select('id')
+        .single();
+      if (e || !data) throw new Error(e?.message ?? 'Could not schedule');
+      await supabase.from('enquiries').update({ status: 'inspection_scheduled' }).eq('id', enquiry.id);
+      router.push(`/(agent)/chat/${data.id}` as Href);
+    } catch (err) {
+      Alert.alert('Could not schedule', err instanceof Error ? err.message : 'Please try again.');
+    } finally {
+      setScheduling(false);
     }
-    openLink(
-      `mailto:${enquiry.enquirer_email}?subject=${encodeURIComponent(`Re: ${listing?.title ?? 'your enquiry'} on DenHunt`)}`,
-    );
+  }
+
+  function onDateChange(event: DateTimePickerEvent, date?: Date) {
+    if (Platform.OS === 'android') {
+      setDatePickerOpen(false);
+      if (event.type === 'set' && date) createSession(date);
+    } else if (date) {
+      setTempDate(date);
+    }
   }
 
   async function changeStatus(status: EnquiryStatus) {
@@ -134,26 +149,15 @@ export default function EnquiryDetailScreen() {
           </View>
         </View>
 
-        {/* SECTION 2 — contact actions */}
+        {/* SECTION 2 — how communication works */}
         <View style={styles.block}>
-          <SectionLabel text="Contact" />
-          <View style={styles.contactRow}>
-            <Pressable style={[styles.contactBtn, styles.contactGreen]} onPress={callPhone}>
-              <Feather name="phone" size={20} color={colors.successText} />
-              <Text style={styles.contactGreenText}>Call</Text>
-            </Pressable>
-            <Pressable style={[styles.contactBtn, styles.contactGreen]} onPress={whatsapp}>
-              <Feather name="message-circle" size={20} color={colors.successText} />
-              <Text style={styles.contactGreenText}>WhatsApp</Text>
-            </Pressable>
-            <Pressable
-              style={[styles.contactBtn, enquiry.enquirer_email ? styles.contactBlue : styles.contactDisabled]}
-              onPress={email}>
-              <Feather name="mail" size={20} color={enquiry.enquirer_email ? colors.blue600 : colors.gray400} />
-              <Text style={enquiry.enquirer_email ? styles.contactBlueText : styles.contactDisabledText}>
-                Email
-              </Text>
-            </Pressable>
+          <SectionLabel text="Messaging" />
+          <View style={styles.escrowNote}>
+            <Feather name="lock" size={14} color={colors.blue600} />
+            <Text style={styles.escrowNoteText}>
+              In-app chat opens after you schedule an inspection and the renter pays the fee (held in
+              escrow). All communication stays on DenHunt — keeping you and the renter protected.
+            </Text>
           </View>
         </View>
 
@@ -249,15 +253,49 @@ export default function EnquiryDetailScreen() {
 
       {/* Sticky bottom bar */}
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + 12 }]}>
-        <Pressable style={[styles.bottomBtn, styles.callBtn]} onPress={callPhone}>
-          <Feather name="phone" size={16} color={colors.blue600} />
-          <Text style={styles.callBtnText}>Call now</Text>
-        </Pressable>
-        <Pressable style={[styles.bottomBtn, styles.waBtn]} onPress={whatsapp}>
-          <Feather name="message-circle" size={16} color={colors.white} />
-          <Text style={styles.waBtnText}>WhatsApp</Text>
+        <Pressable
+          style={[styles.bottomBtn, styles.scheduleBtn, scheduling && styles.disabledBtn]}
+          disabled={scheduling}
+          onPress={() => {
+            setTempDate(new Date());
+            setDatePickerOpen(true);
+          }}>
+          <Feather name="calendar" size={16} color={colors.white} />
+          <Text style={styles.scheduleBtnText}>{scheduling ? 'Scheduling…' : 'Schedule inspection'}</Text>
         </Pressable>
       </View>
+
+      {/* Schedule date picker */}
+      {datePickerOpen && Platform.OS === 'ios' ? (
+        <View style={styles.dateModalWrap}>
+          <Pressable style={styles.dateBackdrop} onPress={() => setDatePickerOpen(false)} />
+          <View style={[styles.dateSheet, { paddingBottom: insets.bottom + 12 }]}>
+            <View style={styles.dateHandle} />
+            <Text style={styles.dateTitle}>Inspection date</Text>
+            <DateTimePicker
+              value={tempDate}
+              mode="date"
+              display="inline"
+              minimumDate={new Date()}
+              onChange={onDateChange}
+              accentColor={colors.blue600}
+              themeVariant="light"
+              textColor={colors.gray900}
+            />
+            <Pressable
+              style={styles.dateDone}
+              onPress={() => {
+                setDatePickerOpen(false);
+                createSession(tempDate);
+              }}>
+              <Text style={styles.dateDoneText}>Schedule</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+      {datePickerOpen && Platform.OS === 'android' ? (
+        <DateTimePicker value={tempDate} mode="date" display="default" minimumDate={new Date()} onChange={onDateChange} />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -313,14 +351,15 @@ const styles = StyleSheet.create({
   receivedText: { fontFamily: fonts.regular, fontSize: 12, color: colors.gray400 },
 
   block: { paddingHorizontal: 20, paddingTop: 20 },
-  contactRow: { flexDirection: 'row', gap: 8, marginTop: 10 },
-  contactBtn: { flex: 1, height: 52, borderRadius: 12, alignItems: 'center', justifyContent: 'center', gap: 5 },
-  contactGreen: { backgroundColor: colors.successBg },
-  contactGreenText: { fontFamily: fonts.medium, fontSize: 12, color: colors.successText },
-  contactBlue: { backgroundColor: colors.blue50 },
-  contactBlueText: { fontFamily: fonts.medium, fontSize: 12, color: colors.blue600 },
-  contactDisabled: { backgroundColor: colors.gray50 },
-  contactDisabledText: { fontFamily: fonts.medium, fontSize: 12, color: colors.gray400 },
+  escrowNote: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: colors.blue50,
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 10,
+  },
+  escrowNoteText: { flex: 1, fontFamily: fonts.regular, fontSize: 12, color: colors.blue800, lineHeight: 17 },
 
   messageBox: { backgroundColor: colors.gray50, borderRadius: 12, padding: 14, marginTop: 10 },
   messageText: { fontFamily: fonts.regular, fontSize: 14, color: colors.gray700, lineHeight: 22 },
@@ -388,10 +427,16 @@ const styles = StyleSheet.create({
     paddingTop: 12,
   },
   bottomBtn: { flex: 1, height: 50, borderRadius: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
-  callBtn: { backgroundColor: colors.white, borderWidth: 1.5, borderColor: colors.blue600 },
-  callBtnText: { fontFamily: fonts.semibold, fontSize: 15, color: colors.blue600 },
-  waBtn: { backgroundColor: WHATSAPP_GREEN },
-  waBtnText: { fontFamily: fonts.semibold, fontSize: 15, color: colors.white },
+  scheduleBtn: { backgroundColor: colors.blue600 },
+  scheduleBtnText: { fontFamily: fonts.semibold, fontSize: 15, color: colors.white },
+  disabledBtn: { opacity: 0.5 },
+  dateModalWrap: { ...StyleSheet.absoluteFillObject, justifyContent: 'flex-end' },
+  dateBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
+  dateSheet: { backgroundColor: colors.white, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 16, paddingTop: 8 },
+  dateHandle: { width: 36, height: 4, borderRadius: 2, backgroundColor: colors.gray200, alignSelf: 'center', marginBottom: 8 },
+  dateTitle: { fontFamily: fonts.semibold, fontSize: 16, color: colors.gray900, paddingHorizontal: 4, marginBottom: 4 },
+  dateDone: { backgroundColor: colors.blue600, borderRadius: 12, paddingVertical: 14, alignItems: 'center', marginTop: 8 },
+  dateDoneText: { fontFamily: fonts.semibold, fontSize: 15, color: colors.white },
 
   notFound: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
   notFoundTitle: { fontFamily: fonts.semibold, fontSize: 16, color: colors.gray900, marginTop: 16 },

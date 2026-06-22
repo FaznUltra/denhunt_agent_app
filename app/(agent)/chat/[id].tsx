@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
+  Dimensions,
   FlatList,
+  Image,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   Text,
@@ -13,15 +17,23 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Swipeable } from 'react-native-gesture-handler';
 import Feather from '@expo/vector-icons/Feather';
+import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker, { type DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { router, useLocalSearchParams, type Href } from 'expo-router';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
 import { Avatar, Skeleton } from '@/components/ui';
-import { formatDate } from '@/utils/format';
+import { formatDate, formatPrice } from '@/utils/format';
 import { useChat } from '@/hooks/useChat';
+import { useSignedUrl } from '@/hooks/useSignedUrl';
 import { supabase } from '@/lib/supabase';
+import InspectionCodeModal from '@/components/chat/InspectionCodeModal';
+import EvidenceBar from '@/components/chat/EvidenceBar';
+import DisputeResponseModal from '@/components/chat/DisputeResponseModal';
 import type { ChatMessage, ReplyTarget } from '@/types/chat';
+import type { InspectionSession } from '@/types/database';
+
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
 function timeOf(iso: string): string {
   const d = new Date(iso);
@@ -32,18 +44,99 @@ function timeOf(iso: string): string {
 export default function ChatScreen() {
   const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
-  const { session, messages, loading, error, sending, othersTyping, send, retry, sendTyping, markRead, refetchSession } =
-    useChat(id);
+  const {
+    session,
+    messages,
+    dispute,
+    loading,
+    error,
+    sending,
+    othersTyping,
+    send,
+    sendImage,
+    retry,
+    sendTyping,
+    markRead,
+    refetchSession,
+    confirmInspectionCode,
+    addAgentEvidence,
+    submitDisputeResponse,
+  } = useChat(id);
 
   const [text, setText] = useState('');
   const [reply, setReply] = useState<ReplyTarget | null>(null);
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
   const [datePickerOpen, setDatePickerOpen] = useState(false);
   const [tempDate, setTempDate] = useState(new Date());
+  const [codeModalVisible, setCodeModalVisible] = useState(false);
+  const [disputeModalVisible, setDisputeModalVisible] = useState(false);
+  const [timeRemaining, setTimeRemaining] = useState('--:--:--');
+  const [escrowUrgent, setEscrowUrgent] = useState(false);
+  const prevStatusRef = useRef<string | null>(null);
 
   // Mark incoming messages read when the thread is open.
   useEffect(() => {
     if (messages.some((m) => m.sender_role !== 'agent' && !m.read_at)) markRead();
   }, [messages, markRead]);
+
+  // Live escrow countdown for in-progress sessions.
+  useEffect(() => {
+    if (session?.status !== 'in_progress' || !session?.escrow_release_at) return;
+    const release = new Date(session.escrow_release_at).getTime();
+    const tick = () => {
+      const diff = release - Date.now();
+      if (diff <= 0) {
+        setTimeRemaining('00:00:00');
+        setEscrowUrgent(true);
+        refetchSession(); // auto-release may have fired
+        return;
+      }
+      setEscrowUrgent(diff < 60 * 60 * 1000);
+      const h = Math.floor(diff / 3_600_000);
+      const m = Math.floor((diff % 3_600_000) / 60_000);
+      const s = Math.floor((diff % 60_000) / 1000);
+      setTimeRemaining(
+        `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`,
+      );
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [session?.status, session?.escrow_release_at, refetchSession]);
+
+  // Alert the agent when a dispute is raised (status transitions to disputed).
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    if (prev && prev !== 'disputed' && session?.status === 'disputed') {
+      Alert.alert(
+        '⚠️ Dispute raised',
+        `${session.renter_name} has raised a dispute for this inspection. You can submit evidence to support your case.`,
+        [
+          { text: 'Later' },
+          { text: 'Submit evidence now', onPress: () => setDisputeModalVisible(true) },
+        ],
+      );
+    }
+    if (session?.status) prevStatusRef.current = session.status;
+  }, [session?.status, session?.renter_name]);
+
+  // Alert on dispute resolution verdict.
+  useEffect(() => {
+    if (!dispute || !session) return;
+    if (dispute.status === 'resolved_agent_fault') {
+      Alert.alert(
+        'Dispute resolved',
+        `DenHunt found in favour of the renter. The inspection fee of ${formatPrice(session.inspection_fee)} has been refunded to them. This has been recorded on your account.`,
+        [{ text: 'Understood' }],
+      );
+    } else if (dispute.status === 'resolved_renter_fault') {
+      Alert.alert(
+        'Dispute resolved in your favour',
+        `DenHunt found the dispute was not valid. The inspection fee of ${formatPrice(session.inspection_fee)} will be released to you.`,
+        [{ text: 'Great, thank you' }],
+      );
+    }
+  }, [dispute, session]);
 
   const byId = useMemo(() => {
     const map: Record<string, ChatMessage> = {};
@@ -53,6 +146,46 @@ export default function ChatScreen() {
 
   // Inverted list shows newest at the bottom.
   const data = useMemo(() => [...messages].reverse(), [messages]);
+
+  const handleReply = useCallback((m: ChatMessage) => {
+    setReply({
+      id: m.id,
+      preview: m.body ?? (m.type === 'image' ? 'Photo' : ''),
+      senderRole: m.sender_role,
+    });
+  }, []);
+
+  const handleViewImage = useCallback((uri: string) => setViewerUri(uri), []);
+
+  const renderItem = useCallback(
+    ({ item }: { item: ChatMessage }) => (
+      <MessageRow
+        message={item}
+        repliedTo={item.reply_to ? byId[item.reply_to] : undefined}
+        onReply={handleReply}
+        onRetry={retry}
+        onViewImage={handleViewImage}
+      />
+    ),
+    [byId, handleReply, retry, handleViewImage],
+  );
+
+  async function pickAndSendImage(fromCamera: boolean) {
+    const replyTo = reply?.id ?? null;
+    if (fromCamera) {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Camera access needed', 'Please allow camera access in your device settings.');
+        return;
+      }
+    }
+    const result = fromCamera
+      ? await ImagePicker.launchCameraAsync({ mediaTypes: ['images'], quality: 1 })
+      : await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 1 });
+    if (result.canceled || !result.assets[0]) return;
+    setReply(null);
+    await sendImage(result.assets[0].uri, replyTo);
+  }
 
   function handleSend() {
     const body = text.trim();
@@ -169,9 +302,15 @@ export default function ChatScreen() {
 
         <ContextBanner
           session={session}
+          timeRemaining={timeRemaining}
+          escrowUrgent={escrowUrgent}
           onAccept={acceptReschedule}
           onPropose={openReschedule}
+          onEnterCode={() => setCodeModalVisible(true)}
+          onRespondDispute={() => setDisputeModalVisible(true)}
         />
+
+        {session.status === 'in_progress' ? <EvidenceBar onAdd={addAgentEvidence} /> : null}
 
         {/* Messages */}
         <FlatList
@@ -181,20 +320,7 @@ export default function ChatScreen() {
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
           keyboardDismissMode="interactive"
-          renderItem={({ item }) => (
-            <MessageRow
-              message={item}
-              repliedTo={item.reply_to ? byId[item.reply_to] : undefined}
-              onReply={(m) =>
-                setReply({
-                  id: m.id,
-                  preview: m.body ?? (m.type === 'image' ? 'Photo' : ''),
-                  senderRole: m.sender_role,
-                })
-              }
-              onRetry={retry}
-            />
-          )}
+          renderItem={renderItem}
         />
 
         {/* Reply preview */}
@@ -223,8 +349,10 @@ export default function ChatScreen() {
           <View style={[styles.composer, { paddingBottom: insets.bottom + 8 }]}>
             <Pressable
               accessibilityLabel="Attach image"
+              accessibilityHint="Long-press to take a photo"
               style={styles.attachBtn}
-              onPress={() => Alert.alert('Photos', 'Image sharing is coming next.')}>
+              onPress={() => pickAndSendImage(false)}
+              onLongPress={() => pickAndSendImage(true)}>
               <Feather name="image" size={22} color={colors.gray500} />
             </Pressable>
             <TextInput
@@ -256,7 +384,7 @@ export default function ChatScreen() {
           <View style={[styles.dateSheet, { paddingBottom: insets.bottom + 12 }]}>
             <View style={styles.dateHandle} />
             <Text style={styles.dateTitle}>Propose a new date</Text>
-            <DateTimePicker value={tempDate} mode="date" display="inline" minimumDate={new Date()} onChange={onDateChange} accentColor={colors.blue600} />
+            <DateTimePicker value={tempDate} mode="date" display="inline" minimumDate={new Date()} onChange={onDateChange} accentColor={colors.blue600} themeVariant="light" textColor={colors.gray900} />
             <Pressable
               style={styles.dateDone}
               onPress={() => {
@@ -271,18 +399,62 @@ export default function ChatScreen() {
       {datePickerOpen && Platform.OS === 'android' ? (
         <DateTimePicker value={tempDate} mode="date" display="default" minimumDate={new Date()} onChange={onDateChange} />
       ) : null}
+
+      <InspectionCodeModal
+        visible={codeModalVisible}
+        renterName={session.renter_name}
+        onClose={() => setCodeModalVisible(false)}
+        onConfirm={confirmInspectionCode}
+      />
+      <DisputeResponseModal
+        visible={disputeModalVisible}
+        onClose={() => setDisputeModalVisible(false)}
+        session={session}
+        renterName={session.renter_name}
+        dispute={dispute}
+        onAddEvidence={addAgentEvidence}
+        onSubmit={submitDisputeResponse}
+      />
+
+      <Modal visible={!!viewerUri} transparent animationType="fade" onRequestClose={() => setViewerUri(null)}>
+        <View style={styles.viewerBackdrop}>
+          {viewerUri ? <Image source={{ uri: viewerUri }} style={styles.viewerImage} resizeMode="contain" /> : null}
+          <Pressable style={styles.viewerClose} onPress={() => setViewerUri(null)}>
+            <Feather name="x" size={22} color={colors.white} />
+          </Pressable>
+          <View style={styles.viewerHint}>
+            <Feather name="download" size={16} color="rgba(255,255,255,0.5)" />
+            <Text style={styles.viewerHintText}>Save to photos coming soon</Text>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
+function isToday(dateStr: string | null): boolean {
+  if (!dateStr) return false;
+  const t = new Date();
+  const today = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+  return dateStr.slice(0, 10) === today;
+}
+
 function ContextBanner({
   session,
+  timeRemaining,
+  escrowUrgent,
   onAccept,
   onPropose,
+  onEnterCode,
+  onRespondDispute,
 }: {
-  session: NonNullable<ReturnType<typeof useChat>['session']>;
+  session: InspectionSession;
+  timeRemaining: string;
+  escrowUrgent: boolean;
   onAccept: () => void;
   onPropose: () => void;
+  onEnterCode: () => void;
+  onRespondDispute: () => void;
 }) {
   if (session.status === 'reschedule_pending' && session.proposed_date) {
     const fromRenter = session.proposed_by === 'renter';
@@ -308,12 +480,28 @@ function ContextBanner({
     );
   }
 
+  // STATE 2B — paid, inspection day, code not yet confirmed.
+  if (session.status === 'escrow_held' && !session.code_confirmed_at && isToday(session.scheduled_date)) {
+    return (
+      <View style={[styles.banner, styles.bannerCode]}>
+        <Feather name="key" size={20} color={colors.white} />
+        <View style={styles.bannerStack}>
+          <Text style={styles.codeTitle}>Renter is here — enter their code</Text>
+          <Text style={styles.codeSub}>Ask the renter for their 6-digit inspection code</Text>
+        </View>
+        <Pressable style={styles.codeBtn} onPress={onEnterCode}>
+          <Text style={styles.codeBtnText}>Enter code</Text>
+        </Pressable>
+      </View>
+    );
+  }
+
   if (session.status === 'in_progress') {
     return (
-      <View style={[styles.banner, styles.bannerSuccess]}>
-        <Feather name="clock" size={16} color={colors.successText} />
-        <Text style={[styles.bannerText, { color: colors.successText }]}>
-          Inspection in progress · escrow in holding
+      <View style={[styles.banner, escrowUrgent ? styles.bannerError : styles.bannerSuccess]}>
+        <Feather name="clock" size={16} color={escrowUrgent ? colors.errorText : colors.successText} />
+        <Text style={[styles.bannerText, { color: escrowUrgent ? colors.errorText : colors.successText }]}>
+          Escrow releases in {timeRemaining}
         </Text>
       </View>
     );
@@ -326,11 +514,22 @@ function ContextBanner({
       </View>
     );
   }
+  if (session.status === 'refunded') {
+    return (
+      <View style={[styles.banner, styles.bannerError]}>
+        <Feather name="rotate-ccw" size={16} color={colors.errorText} />
+        <Text style={[styles.bannerText, { color: colors.errorText }]}>Refunded to renter (dispute upheld)</Text>
+      </View>
+    );
+  }
   if (session.status === 'disputed') {
     return (
       <View style={[styles.banner, styles.bannerError]}>
         <Feather name="alert-triangle" size={16} color={colors.errorText} />
         <Text style={[styles.bannerText, { color: colors.errorText }]}>Dispute under review</Text>
+        <Pressable style={styles.respondBtn} onPress={onRespondDispute}>
+          <Text style={styles.respondText}>Respond</Text>
+        </Pressable>
       </View>
     );
   }
@@ -350,80 +549,204 @@ function ContextBanner({
   return null;
 }
 
-function MessageRow({
+type SystemView = { icon: keyof typeof Feather.glyphMap; color: string; text: string };
+
+function systemView(message: ChatMessage): SystemView {
+  const meta = (message.metadata ?? {}) as Record<string, unknown>;
+  const type = typeof meta.type === 'string' ? meta.type : null;
+  const amount = typeof meta.amount === 'number' ? formatPrice(meta.amount) : '';
+  const mine = meta.submitted_by !== 'renter';
+  const fallback = message.body ?? '';
+  switch (type) {
+    case 'payment_received':
+      return { icon: 'lock', color: colors.blue600, text: `Payment received · ${amount} held in escrow` };
+    case 'inspection_started':
+      return { icon: 'play-circle', color: colors.blue600, text: 'Inspection started · escrow holds for 8 hours' };
+    case 'escrow_released':
+      return { icon: 'check-circle', color: colors.successText, text: `Escrow released · ${amount} paid to you` };
+    case 'dispute_raised':
+      return {
+        icon: 'alert-triangle',
+        color: colors.errorText,
+        text: typeof meta.reason === 'string' ? `Dispute raised — ${meta.reason}` : 'A dispute was raised',
+      };
+    case 'evidence_recorded':
+      return { icon: 'video', color: colors.blue600, text: `${mine ? 'You' : 'Renter'} recorded inspection evidence` };
+    case 'agent_responded_to_dispute':
+      return { icon: 'send', color: colors.blue600, text: 'You submitted a response to DenHunt' };
+    case 'dispute_resolved':
+      return meta.verdict === 'agent_fault'
+        ? { icon: 'alert-circle', color: colors.errorText, text: `Dispute resolved · Renter refunded ${amount}` }
+        : { icon: 'check-circle', color: colors.successText, text: `Dispute resolved in your favour · ${amount} released to you` };
+    default:
+      return { icon: 'info', color: colors.gray400, text: fallback };
+  }
+}
+
+function SystemMessage({ message }: { message: ChatMessage }) {
+  const { icon, color, text } = systemView(message);
+  return (
+    <View style={styles.systemWrap}>
+      <View style={styles.systemRow}>
+        <Feather name={icon} size={14} color={color} />
+        <Text style={[styles.systemText, { color }]}>{text}</Text>
+      </View>
+    </View>
+  );
+}
+
+// Image message body: resolves a signed URL for sent images, renders the local
+// URI instantly while sending/failed. The useSignedUrl hook lives here so it is
+// always called unconditionally for an image message (no hook-order issues).
+function ImageContent({
   message,
-  repliedTo,
-  onReply,
+  onView,
   onRetry,
 }: {
   message: ChatMessage;
-  repliedTo?: ChatMessage;
-  onReply: (m: ChatMessage) => void;
+  onView: (uri: string) => void;
   onRetry: (m: ChatMessage) => void;
 }) {
-  const swipeRef = useRef<Swipeable>(null);
+  const signed = useSignedUrl(message.image_url, 'chat-media');
 
-  if (message.type === 'system') {
+  if (message.pending) {
     return (
-      <View style={styles.systemWrap}>
-        <Text style={styles.systemText}>{message.body}</Text>
+      <View style={styles.chatImageWrap}>
+        <Image source={{ uri: message.image_url ?? undefined }} style={styles.chatImage} resizeMode="cover" />
+        <View style={styles.imageOverlay}>
+          <ActivityIndicator color={colors.white} />
+        </View>
       </View>
     );
   }
-
-  const mine = message.sender_role === 'agent';
-
-  const bubble = (
-    <Pressable
-      onPress={() => (message.failed ? onRetry(message) : undefined)}
-      style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
-      <View style={[styles.bubble, mine ? styles.bubbleMine : styles.bubbleTheirs]}>
-        {repliedTo ? (
-          <View style={[styles.quote, mine ? styles.quoteMine : styles.quoteTheirs]}>
-            <Text style={[styles.quoteWho, mine && styles.quoteTextMine]}>
-              {repliedTo.sender_role === 'agent' ? 'You' : 'Renter'}
-            </Text>
-            <Text style={[styles.quoteText, mine && styles.quoteTextMine]} numberOfLines={1}>
-              {repliedTo.body ?? 'Photo'}
-            </Text>
-          </View>
-        ) : null}
-        <Text style={[styles.bubbleText, mine ? styles.bubbleTextMine : styles.bubbleTextTheirs]}>
-          {message.body}
-        </Text>
-        <View style={styles.metaRow}>
-          <Text style={[styles.metaTime, mine ? styles.metaTimeMine : styles.metaTimeTheirs]}>
-            {timeOf(message.created_at)}
-          </Text>
-          {mine ? (
-            message.failed ? (
-              <Feather name="alert-circle" size={12} color={colors.errorBg} />
-            ) : message.pending ? (
-              <Feather name="clock" size={11} color="rgba(255,255,255,0.7)" />
-            ) : (
-              <Text style={styles.receipt}>{message.read_at ? '✓✓' : '✓'}</Text>
-            )
-          ) : null}
+  if (message.failed) {
+    return (
+      <Pressable style={styles.chatImageWrap} onPress={() => onRetry(message)}>
+        <Image source={{ uri: message.image_url ?? undefined }} style={styles.chatImage} resizeMode="cover" />
+        <View style={[styles.imageOverlay, styles.imageOverlayError]}>
+          <Feather name="alert-circle" size={20} color={colors.white} />
+          <Text style={styles.imageRetryText}>Tap to retry</Text>
         </View>
-      </View>
+      </Pressable>
+    );
+  }
+  if (!signed) {
+    return <Skeleton width={220} height={220} borderRadius={12} />;
+  }
+  return (
+    <Pressable onPress={() => onView(signed)}>
+      <Image source={{ uri: signed }} style={styles.chatImage} resizeMode="cover" />
     </Pressable>
   );
-
-  return (
-    <Swipeable
-      ref={swipeRef}
-      friction={2}
-      leftThreshold={36}
-      overshootLeft={false}
-      renderLeftActions={() => <View style={styles.replyAction}><Feather name="corner-up-left" size={18} color={colors.gray400} /></View>}
-      onSwipeableOpen={() => {
-        onReply(message);
-        swipeRef.current?.close();
-      }}>
-      {bubble}
-    </Swipeable>
-  );
 }
+
+const MessageRow = memo(
+  function MessageRow({
+    message,
+    repliedTo,
+    onReply,
+    onRetry,
+    onViewImage,
+  }: {
+    message: ChatMessage;
+    repliedTo?: ChatMessage;
+    onReply: (m: ChatMessage) => void;
+    onRetry: (m: ChatMessage) => void;
+    onViewImage: (uri: string) => void;
+  }) {
+    const swipeRef = useRef<Swipeable>(null);
+
+    if (message.type === 'system') {
+      return <SystemMessage message={message} />;
+    }
+
+    const mine = message.sender_role === 'agent';
+    const isImage = message.type === 'image';
+
+    const bubble = (
+      <Pressable
+        onPress={() => (message.failed && !isImage ? onRetry(message) : undefined)}
+        style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
+        <View
+          style={[
+            styles.bubble,
+            mine ? styles.bubbleMine : styles.bubbleTheirs,
+            isImage && styles.bubbleImage,
+          ]}>
+          {repliedTo ? (
+            <View style={[styles.quote, mine ? styles.quoteMine : styles.quoteTheirs]}>
+              <Text style={[styles.quoteWho, mine && styles.quoteTextMine]}>
+                {repliedTo.sender_role === 'agent' ? 'You' : 'Renter'}
+              </Text>
+              {repliedTo.type === 'image' ? (
+                <View style={styles.quotePhoto}>
+                  <Feather name="image" size={12} color={mine ? colors.white : colors.gray500} />
+                  <Text style={[styles.quoteText, mine && styles.quoteTextMine]}>Photo</Text>
+                </View>
+              ) : (
+                <Text style={[styles.quoteText, mine && styles.quoteTextMine]} numberOfLines={1}>
+                  {repliedTo.body}
+                </Text>
+              )}
+            </View>
+          ) : null}
+
+          {isImage ? (
+            <ImageContent message={message} onView={onViewImage} onRetry={onRetry} />
+          ) : (
+            <Text style={[styles.bubbleText, mine ? styles.bubbleTextMine : styles.bubbleTextTheirs]}>
+              {message.body}
+            </Text>
+          )}
+
+          <View style={[styles.metaRow, isImage && styles.metaRowImage]}>
+            <Text style={[styles.metaTime, mine ? styles.metaTimeMine : styles.metaTimeTheirs]}>
+              {timeOf(message.created_at)}
+            </Text>
+            {mine ? (
+              message.failed ? (
+                <Feather name="alert-circle" size={12} color={colors.errorBg} />
+              ) : message.pending ? (
+                <Feather name="clock" size={11} color="rgba(255,255,255,0.7)" />
+              ) : (
+                <Text style={styles.receipt}>{message.read_at ? '✓✓' : '✓'}</Text>
+              )
+            ) : null}
+          </View>
+        </View>
+      </Pressable>
+    );
+
+    return (
+      <Swipeable
+        ref={swipeRef}
+        friction={2}
+        leftThreshold={36}
+        overshootLeft={false}
+        renderLeftActions={() => <View style={styles.replyAction}><Feather name="corner-up-left" size={18} color={colors.gray400} /></View>}
+        onSwipeableOpen={() => {
+          onReply(message);
+          swipeRef.current?.close();
+        }}>
+        {bubble}
+      </Swipeable>
+    );
+  },
+  // Only re-render a row when its own visual data changes — not when the parent
+  // re-renders for the per-second escrow countdown.
+  (prev, next) =>
+    prev.message.id === next.message.id &&
+    prev.message.read_at === next.message.read_at &&
+    prev.message.pending === next.message.pending &&
+    prev.message.failed === next.message.failed &&
+    prev.message.body === next.message.body &&
+    prev.message.image_url === next.message.image_url &&
+    prev.repliedTo?.id === next.repliedTo?.id &&
+    prev.repliedTo?.body === next.repliedTo?.body &&
+    prev.onReply === next.onReply &&
+    prev.onRetry === next.onRetry &&
+    prev.onViewImage === next.onViewImage,
+);
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.gray50 },
@@ -465,19 +788,33 @@ const styles = StyleSheet.create({
   bannerBtnGhost: { borderWidth: 1.5, borderColor: colors.blue600, borderRadius: 8, paddingVertical: 5, paddingHorizontal: 12 },
   bannerBtnGhostText: { fontFamily: fonts.semibold, fontSize: 12, color: colors.blue600 },
 
+  // STATE 2B — enter code.
+  bannerCode: { backgroundColor: colors.blue600, paddingHorizontal: 20, paddingVertical: 14, alignItems: 'center' },
+  bannerStack: { flex: 1 },
+  codeTitle: { fontFamily: fonts.bold, fontSize: 14, color: colors.white },
+  codeSub: { fontFamily: fonts.regular, fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 },
+  codeBtn: { backgroundColor: colors.white, borderRadius: 8, paddingVertical: 7, paddingHorizontal: 12 },
+  codeBtnText: { fontFamily: fonts.semibold, fontSize: 13, color: colors.blue600 },
+  respondBtn: { backgroundColor: colors.white, borderRadius: 8, paddingVertical: 6, paddingHorizontal: 12 },
+  respondText: { fontFamily: fonts.semibold, fontSize: 13, color: colors.errorText },
+
   listContent: { paddingHorizontal: 12, paddingVertical: 12, gap: 6 },
 
   systemWrap: { alignItems: 'center', marginVertical: 6, paddingHorizontal: 24 },
-  systemText: {
-    fontFamily: fonts.regular,
-    fontSize: 12,
-    color: colors.gray500,
+  systemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: colors.gray100,
     borderRadius: 10,
     paddingVertical: 6,
     paddingHorizontal: 12,
+  },
+  systemText: {
+    fontFamily: fonts.regular,
+    fontSize: 12,
+    color: colors.gray500,
     textAlign: 'center',
-    overflow: 'hidden',
   },
 
   bubbleRow: { flexDirection: 'row', marginVertical: 2 },
@@ -495,12 +832,39 @@ const styles = StyleSheet.create({
   quoteWho: { fontFamily: fonts.semibold, fontSize: 11, color: colors.blue600 },
   quoteText: { fontFamily: fonts.regular, fontSize: 12, color: colors.gray500 },
   quoteTextMine: { color: 'rgba(255,255,255,0.85)' },
+  quotePhoto: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 4, marginTop: 2 },
+  metaRowImage: { position: 'absolute', bottom: 6, right: 10, backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 8, paddingHorizontal: 6, paddingVertical: 2, marginTop: 0 },
   metaTime: { fontFamily: fonts.regular, fontSize: 10 },
   metaTimeMine: { color: 'rgba(255,255,255,0.7)' },
   metaTimeTheirs: { color: colors.gray400 },
   receipt: { fontFamily: fonts.regular, fontSize: 11, color: 'rgba(255,255,255,0.85)' },
   replyAction: { justifyContent: 'center', paddingHorizontal: 20 },
+
+  // Image messages.
+  bubbleImage: { padding: 4, overflow: 'hidden' },
+  chatImageWrap: { width: 220, height: 220, borderRadius: 12, overflow: 'hidden' },
+  chatImage: { width: 220, height: 220, borderRadius: 12, backgroundColor: colors.gray200 },
+  imageOverlay: { ...StyleSheet.absoluteFillObject, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(0,0,0,0.3)' },
+  imageOverlayError: { backgroundColor: 'rgba(220,0,0,0.4)', gap: 6 },
+  imageRetryText: { fontFamily: fonts.regular, fontSize: 11, color: colors.white },
+
+  // Full-screen image viewer.
+  viewerBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', alignItems: 'center', justifyContent: 'center' },
+  viewerImage: { width: SCREEN_W, height: SCREEN_H * 0.75 },
+  viewerClose: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerHint: { position: 'absolute', bottom: 60, alignItems: 'center', gap: 6 },
+  viewerHintText: { fontFamily: fonts.regular, fontSize: 12, color: 'rgba(255,255,255,0.5)' },
 
   replyBar: {
     flexDirection: 'row',

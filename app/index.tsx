@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { Animated, Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
@@ -11,10 +11,8 @@ import {
 } from '@expo-google-fonts/inter';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
-import { getSession } from '@/lib/auth';
 
 // Routes are built screen-by-screen; these targets may not exist yet.
-const AGENT_HOME = '/(agent)' as Href;
 const ROLE_SELECT = '/(auth)/role-select' as Href;
 // isReturning lets the phone screen skip onboarding and go straight to OTP.
 const SIGN_IN = '/(auth)/phone?isReturning=true' as Href;
@@ -33,8 +31,8 @@ const FEATURES: FeatureRow[] = [
 // Brand icon mark — navy "D"/house on a transparent background, reads well on light.
 const LOGO_MARK = require('../assets/logo/04_Icon_Mark/Denhunt_Icon_Mark_Color_Transparent.png');
 
-// First screen a new user sees. Redirects authenticated users straight to the
-// agent dashboard; otherwise shows the welcome screen.
+// First screen a new (signed-out) user sees. Routing of signed-in users away
+// from here is handled centrally by the root layout's auth guard.
 // See docs/denhunt-design-system.md and PRD Section 3 (Onboarding).
 export default function WelcomeScreen() {
   const insets = useSafeAreaInsets();
@@ -43,32 +41,11 @@ export default function WelcomeScreen() {
     Inter_600SemiBold,
     Inter_700Bold,
   });
-  const [checkingSession, setCheckingSession] = useState(true);
   const fade = useRef(new Animated.Value(0)).current;
-
-  // Check for an existing Supabase session before showing the welcome content.
-  useEffect(() => {
-    let mounted = true;
-    getSession()
-      .then((session) => {
-        if (!mounted) return;
-        if (session) {
-          router.replace(AGENT_HOME);
-        } else {
-          setCheckingSession(false);
-        }
-      })
-      .catch(() => {
-        if (mounted) setCheckingSession(false);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
 
   // Clean opacity fade-in once the welcome content is ready to show.
   useEffect(() => {
-    if (!checkingSession && fontsLoaded) {
+    if (fontsLoaded) {
       Animated.timing(fade, {
         toValue: 1,
         duration: 400,
@@ -76,7 +53,7 @@ export default function WelcomeScreen() {
         useNativeDriver: true,
       }).start();
     }
-  }, [checkingSession, fontsLoaded, fade]);
+  }, [fontsLoaded, fade]);
 
   function handleGetStarted() {
     router.push(ROLE_SELECT);
@@ -89,15 +66,6 @@ export default function WelcomeScreen() {
   // Font guard (root layout also gates on fonts, but guard here too).
   if (!fontsLoaded) {
     return null;
-  }
-
-  // Loading state: white screen with the logo mark centred — no content flash.
-  if (checkingSession) {
-    return (
-      <SafeAreaView style={styles.loadingScreen}>
-        <Image source={LOGO_MARK} style={styles.logoMark} resizeMode="contain" />
-      </SafeAreaView>
-    );
   }
 
   return (

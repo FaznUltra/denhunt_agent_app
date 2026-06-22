@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   Alert,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,9 +10,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Feather from '@expo/vector-icons/Feather';
+import * as Notifications from 'expo-notifications';
 import { router, type Href } from 'expo-router';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
+import { useNotifications } from '@/hooks/useNotifications';
+import InviteAgentSheet from '@/components/team/InviteAgentSheet';
 import {
   Avatar,
   Button,
@@ -36,6 +40,7 @@ const R = {
   enquiries: '/(agent)/enquiries' as Href,
   team: '/(agent)/team' as Href,
   identity: '/(auth)/identity' as Href,
+  notifications: '/(agent)/notifications' as Href,
 };
 
 type QuickAction = {
@@ -57,7 +62,7 @@ function firstNameOf(fullName: string): string {
 
 // ---- Shared chrome ----------------------------------------------------------
 
-function DashboardHeader({ user }: { user: DashboardUser }) {
+function DashboardHeader({ user, unreadCount }: { user: DashboardUser; unreadCount: number }) {
   return (
     <View style={styles.header}>
       <View style={styles.greetingStack}>
@@ -69,8 +74,13 @@ function DashboardHeader({ user }: { user: DashboardUser }) {
           accessibilityRole="button"
           accessibilityLabel="Notifications"
           style={styles.bell}
-          onPress={() => Alert.alert('Notifications', 'Notifications coming soon')}>
+          onPress={() => router.push(R.notifications)}>
           <Feather name="bell" size={22} color={colors.gray500} />
+          {unreadCount > 0 ? (
+            <View style={styles.bellBadge}>
+              <Text style={styles.bellBadgeText}>{unreadCount > 9 ? '9+' : unreadCount}</Text>
+            </View>
+          ) : null}
         </Pressable>
         <Pressable accessibilityRole="button" accessibilityLabel="Profile" onPress={() => router.push(R.profile)}>
           <Avatar name={user.full_name} uri={user.profile_photo_url} size={40} />
@@ -80,11 +90,34 @@ function DashboardHeader({ user }: { user: DashboardUser }) {
   );
 }
 
+// Non-blocking banner shown when the OS push permission has been denied.
+function PushDeniedBanner() {
+  const [denied, setDenied] = useState(false);
+  useEffect(() => {
+    Notifications.getPermissionsAsync().then(({ status }) => setDenied(status === 'denied'));
+  }, []);
+  if (!denied) return null;
+  return (
+    <View style={styles.pushBanner}>
+      <Feather name="bell-off" size={18} color={colors.warningText} />
+      <View style={styles.pushTextStack}>
+        <Text style={styles.pushTitle}>Enable notifications</Text>
+        <Text style={styles.pushSub}>Get alerts for new messages and inspections</Text>
+      </View>
+      <Pressable style={styles.pushBtn} onPress={() => Linking.openSettings()}>
+        <Text style={styles.pushBtnText}>Enable</Text>
+      </Pressable>
+    </View>
+  );
+}
+
 function DashboardShell({ user, children }: { user: DashboardUser; children: ReactNode }) {
+  const { unreadCount } = useNotifications();
   return (
     <SafeAreaView style={styles.screen} edges={['top']}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        <DashboardHeader user={user} />
+        <DashboardHeader user={user} unreadCount={unreadCount} />
+        <PushDeniedBanner />
         {children}
       </ScrollView>
     </SafeAreaView>
@@ -223,8 +256,9 @@ function AgencyAdminView({ data }: { data: DashboardData }) {
   const user = data.user as DashboardUser;
   const agency = data.agency;
   const stats = data.agencyStats;
+  const [inviteVisible, setInviteVisible] = useState(false);
   const actions: QuickAction[] = [
-    { icon: 'user-plus', label: 'Invite agent', onPress: () => Alert.alert('Invite agent', 'Invite feature — coming in next build') },
+    { icon: 'user-plus', label: 'Invite agent', onPress: () => setInviteVisible(true) },
     { icon: 'file-plus', label: 'New listing', onPress: () => router.push(R.create) },
     { icon: 'users', label: 'My team', onPress: () => router.push(R.team) },
     { icon: 'bar-chart-2', label: 'Analytics', onPress: () => Alert.alert('Analytics', 'Analytics coming soon') },
@@ -232,6 +266,7 @@ function AgencyAdminView({ data }: { data: DashboardData }) {
 
   return (
     <DashboardShell user={user}>
+      <InviteAgentSheet visible={inviteVisible} onClose={() => setInviteVisible(false)} />
       {/* Agency header card */}
       <View style={styles.section}>
         <View style={styles.agencyCard}>
@@ -299,7 +334,7 @@ function AgencyAdminView({ data }: { data: DashboardData }) {
                   variant="secondary"
                   label="Invite agent"
                   fullWidth={false}
-                  onPress={() => Alert.alert('Invite agent', 'Invite feature — coming in next build')}
+                  onPress={() => setInviteVisible(true)}
                 />
               </View>
             </View>
@@ -446,6 +481,34 @@ const styles = StyleSheet.create({
   name: { fontFamily: fonts.bold, fontSize: 22, color: colors.gray900, letterSpacing: -0.3, marginTop: 2 },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   bell: { padding: 2 },
+  bellBadge: {
+    position: 'absolute',
+    top: -4,
+    right: -5,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: colors.errorText,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bellBadgeText: { fontFamily: fonts.bold, fontSize: 10, color: colors.white },
+  pushBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: colors.warningBg,
+    borderRadius: 12,
+    marginHorizontal: 20,
+    marginTop: 8,
+    padding: 12,
+  },
+  pushTextStack: { flex: 1 },
+  pushTitle: { fontFamily: fonts.semibold, fontSize: 13, color: colors.warningText },
+  pushSub: { fontFamily: fonts.regular, fontSize: 12, color: colors.warningText, opacity: 0.8, marginTop: 1 },
+  pushBtn: { backgroundColor: colors.warningText, borderRadius: 8, paddingVertical: 5, paddingHorizontal: 10 },
+  pushBtnText: { fontFamily: fonts.semibold, fontSize: 12, color: colors.white },
   section: { marginHorizontal: 20, marginTop: 16 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   seeAll: { fontFamily: fonts.medium, fontSize: 13, color: colors.blue600 },

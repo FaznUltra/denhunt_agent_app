@@ -1,9 +1,17 @@
+import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Tabs, useRouter, type Href } from 'expo-router';
 import Feather from '@expo/vector-icons/Feather';
+import * as Notifications from 'expo-notifications';
 import type { BottomTabBarButtonProps } from '@react-navigation/bottom-tabs';
 import { colors } from '@/constants/colors';
 import { fonts } from '@/constants/typography';
+import {
+  registerForPushNotifications,
+  saveTokenToSupabase,
+  updateBadgeCount,
+} from '@/services/notifications';
+import { openNotificationTarget } from './notifications';
 
 // Centre "Post (+)" button — an action, not a screen. It intercepts the press
 // and opens the listing-creation flow; app/(agent)/post.tsx renders nothing.
@@ -40,6 +48,47 @@ function TabBarLabel({ label, focused }: { label: string; focused: boolean }) {
 // Agent bottom tab navigator. 5 items: Home, Listings, Post(+), Enquiries,
 // Profile. See docs/denhunt-design-system.md (Bottom navigation bar).
 export default function AgentLayout() {
+  // Auth routing (redirecting signed-out users out of this group) is handled
+  // centrally by the root layout's reactive guard.
+
+  // Register for push + sync badge on mount (self-guards if no user yet).
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      const token = await registerForPushNotifications();
+      if (token && mounted) await saveTokenToSupabase(token);
+      await updateBadgeCount();
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Notification tapped while app was backgrounded/closed → deep link.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      openNotificationTarget(response.notification.request.content.data as Record<string, string> | null);
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Notification arrived in the foreground → keep the badge in sync.
+  useEffect(() => {
+    const sub = Notifications.addNotificationReceivedListener(() => {
+      updateBadgeCount();
+    });
+    return () => sub.remove();
+  }, []);
+
+  // App opened cold from a notification tap.
+  useEffect(() => {
+    Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response?.notification.request.content.data) {
+        openNotificationTarget(response.notification.request.content.data as Record<string, string> | null);
+      }
+    });
+  }, []);
+
   return (
     <Tabs
       screenOptions={{
@@ -85,9 +134,10 @@ export default function AgentLayout() {
           tabBarIcon: ({ color }) => <Feather name="user" size={22} color={color} />,
         }}
       />
-      {/* Team + chat are reached from other screens, not the tab bar. */}
+      {/* Team, chat + notifications are reached from other screens, not the tab bar. */}
       <Tabs.Screen name="team" options={{ href: null }} />
       <Tabs.Screen name="chat" options={{ href: null }} />
+      <Tabs.Screen name="notifications" options={{ href: null }} />
     </Tabs>
   );
 }

@@ -153,3 +153,23 @@ export function lgasForState(state: string | null): string[] {
   if (!state) return [];
   return LGAS_BY_STATE[state] ?? ['Other'];
 }
+
+// Shared by onboarding (step 5) + profile edit.
+export const EXPERIENCE_OPTIONS = ['Less than 1 yr', '1–3 yrs', '3–5 yrs', '5–10 yrs', '10+ yrs'];
+
+export const SPECIALISATIONS: { label: string; value: string }[] = [
+  { label: 'Apartments', value: 'apartment' },
+  { label: 'Self-contained', value: 'self_con' },
+  { label: 'Mini flats', value: 'mini_flat' },
+  { label: 'Duplexes', value: 'duplex' },
+  { label: 'Bungalows', value: 'bungalow' },
+  { label: 'Commercial', value: 'commercial' },
+  { label: 'Land', value: 'land' },
+  { label: 'Short-lets', value: 'shortlet' },
+];
+
+export const AREA_OPTIONS = [
+  'Lagos', 'Abuja (FCT)', 'Port Harcourt', 'Ibadan', 'Kano', 'Enugu', 'Benin City',
+  'Kaduna', 'Jos', 'Abeokuta', 'Ilorin', 'Owerri', 'Calabar', 'Uyo', 'Warri',
+  'Asaba', 'Akure', 'Ado-Ekiti', 'Maiduguri', 'Sokoto',
+];
